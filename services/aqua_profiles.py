@@ -178,6 +178,12 @@ async def fetch_aqua_team_profiles(
                     return profiles
                 last_err = f"Пустой список профилей ({path})"
 
+    if last_err and "404" in last_err:
+        raise AquaError(
+            "API GOO не отдаёт список профилей (все пути 404). "
+            "Введи Profile ID вручную: в боте AQUA → Мой профиль → Профили… "
+            "(код вида 7Fm70U0QUMU). Проверь также личный API key и AQUA_TEAM_API_KEY на сервере."
+        )
     raise AquaError(last_err or "Не удалось загрузить профили AQUA")
 
 

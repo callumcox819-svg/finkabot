@@ -81,6 +81,16 @@ def database_url_for_logs(url: str) -> str:
         return "postgresql://***"
 
 
+def _railway_variables_hint() -> str:
+    if (os.getenv("APP_ROLE") or "").strip() == "imap_worker":
+        name = (os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
+        return f"Сервис IMAP ({name or 'imap_worker / unique-solace'})"
+    name = (os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
+    if name:
+        return f"Сервис «{name}»"
+    return "Сервис бота (finkabot)"
+
+
 def assert_persistent_database_or_exit(url: str | None = None) -> None:
     """На Railway SQLite/пустой DATABASE_URL — данные пропадают при redeploy."""
     db_url = normalize_database_url(url or resolve_database_url())
@@ -97,7 +107,8 @@ def assert_persistent_database_or_exit(url: str | None = None) -> None:
     log.critical("DATABASE_URL сейчас: %s", database_url_for_logs(db_url))
     log.critical("")
     log.critical("1) В проекте Railway: + New → Database → PostgreSQL")
-    log.critical("2) Сервис бота → Variables → удали ПУСТУЮ DATABASE_URL")
+    svc = _railway_variables_hint()
+    log.critical("2) %s → Variables → удали ПУСТУЮ DATABASE_URL (если есть)", svc)
     log.critical("3) + New Variable → Variable Reference → Postgres → DATABASE_URL")
     log.critical("4) Redeploy. В логах: «БД: PostgreSQL»")
     log.critical("Подробно: RAILWAY_DATABASE.txt")

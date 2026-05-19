@@ -54,6 +54,7 @@ def profile_screen_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📋 Выбрать профиль AQUA", callback_data="aqua_profile_list:0")],
+            [InlineKeyboardButton(text="✍️ Ввести Profile ID", callback_data="aqua_set:profile_id")],
             [InlineKeyboardButton(text="🔄 Обновить список", callback_data="aqua_profile_list:0")],
             [InlineKeyboardButton(text="🧭 Сервис", callback_data="aqua_service_menu")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
@@ -211,7 +212,9 @@ async def aqua_profile_list(callback: CallbackQuery, state: FSMContext) -> None:
     except AquaError as e:
         await callback.message.edit_text(
             f"❌ Не удалось загрузить профили:\n<code>{str(e)[:350]}</code>\n\n"
-            "Проверь ключи и что профили созданы в боте AQUA.",
+            "Список из API недоступен — нажми <b>✍️ Ввести Profile ID</b> и вставь код "
+            "из бота AQUA (Мой профиль → Профили…).\n"
+            "Либо проверь личный API key и <code>AQUA_TEAM_API_KEY</code> на Railway.",
             parse_mode="HTML",
             reply_markup=profile_screen_kb(),
         )
@@ -301,6 +304,25 @@ async def aqua_set_user_key_begin(callback: CallbackQuery, state: FSMContext) ->
     await callback.answer()
 
 
+@router.callback_query(F.data == "aqua_set:profile_id")
+async def aqua_set_profile_id_begin(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(KeysState.waiting_value)
+    await state.update_data(field="aqua_profile_id")
+    await callback.message.edit_text(
+        "✍️ <b>Profile ID</b> из бота AQUA (GOO)\n\n"
+        "Путь: <b>Мой профиль → Профили…</b> — скопируй идентификатор "
+        "(например <code>7Fm70U0QUMU</code>).\n\n"
+        "Это не API key — только код выбранного профиля.",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="aqua_show:profile")]
+            ]
+        ),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
 @router.message(KeysState.waiting_value)
 async def keys_set_finish(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
@@ -315,10 +337,22 @@ async def keys_set_finish(message: Message, state: FSMContext) -> None:
         if field == "aqua_user_key":
             user.goo_user_api_key_aqua = value
             await set_user_setting(session, user, AQUA_USER_API_KEY_SETTING, value)
+        elif field == "aqua_profile_id":
+            await apply_aqua_profile_to_user(
+                session,
+                user,
+                AquaProfile(profile_id=value, title="", full_name="", address=""),
+            )
+        else:
+            await message.answer("❌ Неизвестное поле.")
+            return
         await session.commit()
 
     await state.clear()
-    await message.answer("✅ Сохранено.")
+    if field == "aqua_profile_id":
+        await message.answer(f"✅ Profile ID сохранён: <code>{value}</code>", parse_mode="HTML")
+    else:
+        await message.answer("✅ Сохранено.")
 
 
 @router.callback_query(F.data == "aqua_service_menu")
