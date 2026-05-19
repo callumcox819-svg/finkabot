@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Iterable
@@ -66,26 +67,75 @@ async def close_validemail_session() -> None:
     _SESSION = None
 
 
+def _validemail_strict_mode() -> bool:
+    return (os.getenv("VALIDEMAIL_STRICT", "1") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _validemail_min_score() -> int:
+    try:
+        return max(50, min(100, int(os.getenv("VALIDEMAIL_MIN_SCORE", "88"))))
+    except (TypeError, ValueError):
+        return 88
+
+
+_BAD_EMAIL_STATES = frozenset(
+    {
+        "unknown",
+        "risky",
+        "undeliverable",
+        "invalid",
+        "not deliverable",
+        "disposable",
+        "catch-all",
+        "catchall",
+        "unverified",
+        "reject",
+        "rejected",
+    }
+)
+
+
 def _normalize_ok(data: object) -> bool:
     """
     Универсальная нормализация под разные ответы ValidEmail.
     validemail.co: IsValid, State=Deliverable, Score (см. docs).
+  VALIDEMAIL_STRICT=1 (по умолчанию): не брать Unknown + Score≥80 — частая причина отбоев.
     """
     if not isinstance(data, dict):
         return False
 
+    state = str(data.get("State") or data.get("state") or "").lower().strip()
+    if state in _BAD_EMAIL_STATES:
+        return False
+
+    strict = _validemail_strict_mode()
+    min_score = _validemail_min_score()
+
     # validemail.co / validemail.net (PascalCase)
     if data.get("IsValid") is True or data.get("isValid") is True:
+        if strict and state in _BAD_EMAIL_STATES:
+            return False
         return True
-    state = str(data.get("State") or data.get("state") or "").lower().strip()
     if state in ("deliverable", "valid", "ok", "accepted"):
         return True
+
     reason = str(data.get("Reason") or data.get("reason") or "").lower()
-    if "accepted" in reason and "invalid" not in reason:
+    if "invalid" in reason or "undeliverable" in reason or "not deliverable" in reason:
+        return False
+    if not strict and "accepted" in reason:
         return True
+
     try:
         score = int(data.get("Score") if data.get("Score") is not None else data.get("score") or 0)
-        if score >= 80 and state != "not deliverable":
+        if strict:
+            if score >= min_score and state in ("deliverable", "valid", "ok", "accepted"):
+                return True
+        elif score >= 80 and state != "not deliverable":
             return True
     except (TypeError, ValueError):
         pass
@@ -97,13 +147,15 @@ def _normalize_ok(data: object) -> bool:
     status = str(
         data.get("status") or data.get("result") or data.get("State") or ""
     ).lower().strip()
+    if status in _BAD_EMAIL_STATES:
+        return False
     if status in ("valid", "ok", "deliverable", "accepted"):
         return True
 
     if data.get("isDeliverable") is True or data.get("is_deliverable") is True or data.get("deliverable") is True:
         return True
 
-    if data.get("smtp_check") is True:
+    if not strict and data.get("smtp_check") is True:
         return True
 
     return False

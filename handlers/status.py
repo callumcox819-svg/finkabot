@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from aiogram import Router, F
 from aiogram.filters import Command
@@ -67,6 +68,8 @@ def render_status_text(
     pending_now: int | None = None,
     accounts_total: int | None = None,
     accounts_active: int | None = None,
+    inbox_bounces: int | None = None,
+    inbox_seller_hits: int | None = None,
 ) -> str:
     """Статус рассылки + данные в БД (всегда, даже если рассылка не запущена)."""
     # st может быть dict (на всякий)
@@ -151,11 +154,28 @@ def render_status_text(
         elif pending_now > 0:
             progress_line = f"\nПрогресс: <b>{sent}/{pending_now}</b>"
 
+    inbox_line = ""
+    if inbox_bounces is not None and inbox_seller_hits is not None:
+        ib = int(inbox_bounces)
+        ish = int(inbox_seller_hits)
+        inbox_line = (
+            f"\n\n<b>Входящие в БД</b>\n"
+            f"↩️ Отбои (mailer-daemon): <b>{ib}</b>\n"
+            f"🟢 Ответ продавца (email в базе): <b>{ish}</b>\n"
+            "<i>Много отбоев при нуле «продавец» — плохая база или прокси, не «тишина».</i>"
+        )
+
+    verify_hint = ""
+    if os.getenv("MAIL_VERIFY_SENT", "0").strip().lower() not in ("1", "true", "yes", "on"):
+        verify_hint = (
+            "\n<i>💡 На Railway: MAIL_VERIFY_SENT=1 — в «отправлено» только письма в папке Sent.</i>"
+        )
+
     return (
         "📊 <b>Статус рассылки</b>\n\n"
         f"{run_line}\n"
         f"Режим: <b>{mode}</b>\n"
-        f"Отправлено: <b>{sent}</b>\n"
+        f"Отправлено (SMTP): <b>{sent}</b>\n"
         f"Ошибок отправки: <b>{failed}</b>"
         f"{progress_line}"
         f"{last_err_line}\n\n"
@@ -163,11 +183,15 @@ def render_status_text(
         f"📄 Объявлений: <b>{offers_total}</b>\n"
         f"📧 Email в очереди: <b>{pending_now}</b>\n"
         f"📮 Аккаунты: <b>{acc_a}/{acc_t}</b> активных"
+        f"{inbox_line}"
+        f"{verify_hint}"
     )
 
 
-async def _collect_db_stats(tg_user_id: int) -> tuple[int, int, int, int]:
-    """(offers_total, pending_emails, accounts_total, accounts_active)"""
+async def _collect_db_stats(
+    tg_user_id: int,
+) -> tuple[int, int, int, int, int, int]:
+    """(offers, pending, acc_total, acc_active, inbox_bounces, inbox_seller_hits)"""
     async with db_session() as session:
         db_user = await get_or_create_user(session, tg_user_id)
         db_user_id = db_user.id
@@ -202,11 +226,31 @@ async def _collect_db_stats(tg_user_id: int) -> tuple[int, int, int, int]:
             )
         ).scalar() or 0
 
+        inbox_bounces = (
+            await session.execute(
+                select(func.count(IncomingMail.id)).where(
+                    IncomingMail.user_id == db_user_id,
+                    func.lower(IncomingMail.from_email).like("%mailer-daemon%"),
+                )
+            )
+        ).scalar() or 0
+
+        inbox_seller_hits = (
+            await session.execute(
+                select(func.count(IncomingMail.id)).where(
+                    IncomingMail.user_id == db_user_id,
+                    IncomingMail.resolved_offer_email_id.is_not(None),
+                )
+            )
+        ).scalar() or 0
+
         return (
             int(offers_total),
             int(pending_now),
             int(accounts_total),
             int(accounts_active),
+            int(inbox_bounces),
+            int(inbox_seller_hits),
         )
 
 
@@ -297,7 +341,9 @@ async def cmd_statussend(message: Message) -> None:
     # Быстрый отклик, пока считаем БД (рассылка не блокирует, но /stat тяжёлый на SQLite).
     wait_msg = await message.answer("⏳ Считаю статистику…")
 
-    offers_total, pending_now, acc_total, acc_active = await _collect_db_stats(tg_user_id)
+    offers_total, pending_now, acc_total, acc_active, inbox_bounces, inbox_seller = (
+        await _collect_db_stats(tg_user_id)
+    )
 
     text = render_status_text(
         st,
@@ -305,6 +351,8 @@ async def cmd_statussend(message: Message) -> None:
         pending_now=pending_now,
         accounts_total=acc_total,
         accounts_active=acc_active,
+        inbox_bounces=inbox_bounces,
+        inbox_seller_hits=inbox_seller,
     )
     try:
         await wait_msg.edit_text(text, parse_mode="HTML")
