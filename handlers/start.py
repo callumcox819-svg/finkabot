@@ -18,14 +18,14 @@ logger = logging.getLogger(__name__)
 _START_DB_TIMEOUT_SEC = float(os.getenv("START_DB_TIMEOUT_SEC", "12"))
 
 _WELCOME = (
-    "👋 Привет! Это бот для рассылки и работы с email.\n\n"
+    "👋 Привет! Бот для рассылки (Финляндия, AQUA / Tori / Posti).\n\n"
     "Основные команды:\n"
     "/send — запустить рассылку\n"
     "/stop — остановить рассылку\n"
     "/stat — статус рассылки\n"
-    "/imap_diag — входящие почта/IMAP\n\n"
-    "Чтобы начать валидацию email — просто пришли сюда JSON-файл с объявлениями.\n\n"
-    "Также ты можешь открыть ⚙️ Настройки и добавить аккаунты, домены, прокси и API-ключи."
+    "/imap_diag — входящая почта / IMAP\n\n"
+    "Чтобы начать валидацию email — пришли JSON-файл с объявлениями.\n\n"
+    "⚙️ Настройки — аккаунты, прокси, API-ключ AQUA, шаблоны."
 )
 
 
@@ -48,7 +48,6 @@ async def cmd_start(message: Message) -> None:
     tg_id = int(message.from_user.id)
     logger.info("▶ HANDLER /start tg=%s", tg_id)
 
-    # Сразу отвечаем в Telegram — без ожидания Postgres (иначе кажется что бот мёртв).
     try:
         await message.answer("⏳ Загружаю меню…")
     except Exception:
@@ -68,7 +67,7 @@ async def cmd_start(message: Message) -> None:
         logger.error("/start DB timeout tg=%s", tg_id)
         await message.answer(
             "⏳ База данных не отвечает. Подожди 15 сек и снова /start.\n"
-            "<i>Если повторяется — на Railway выключи IMAP: ENABLE_INCOMING_MAIL=0</i>",
+            "<i>Если повторяется — проверь Postgres на Railway.</i>",
             parse_mode="HTML",
         )
         return

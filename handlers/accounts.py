@@ -264,6 +264,14 @@ async def _bulk_add_accounts(
     except Exception:
         pass
 
+    if ok_count:
+        try:
+            from services.incoming_mail_worker import invalidate_accounts_cache
+
+            invalidate_accounts_cache()
+        except Exception:
+            pass
+
     return ok_count, fail_count, details
 
 

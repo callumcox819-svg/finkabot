@@ -238,7 +238,9 @@ async def cmd_imap_diag(message: Message) -> None:
 
     lines = [
         "<b>IMAP</b>",
-        f"Режим: <code>{snap.get('scheduler', '—')}</code>, пауза рассылки: <code>{snap.get('mailing_pause', '—')}</code>",
+        f"Режим: <code>{snap.get('scheduler', '—')}</code>, "
+        f"интервал ящика: <code>{snap.get('per_account_interval_sec', '—')}s</code>, "
+        f"пауза рассылки: <code>{snap.get('mailing_pause', '—')}</code>",
         f"Параллельно: <b>{snap.get('max_concurrent', '—')}</b>, опрос ~<b>{snap.get('poll_fallback_sec', 20)}</b> с",
         f"Входящих в БД (всего): <b>{incoming_total}</b>",
     ]

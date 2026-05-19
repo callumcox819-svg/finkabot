@@ -1,11 +1,11 @@
 """
 Отдельный процесс только для входящей почты (IMAP).
 
-На Railway: второй сервис из того же репозитория, команда запуска:
-  python imap_worker.py
+На Railway: второй сервис из того же репозитория:
+  Start command: python imap_worker.py
 
-Общее с ботом: DATABASE_URL, BOT_TOKEN (только send_message, без polling).
-На сервисе бота: IMAP_DEDICATED_WORKER=1 — чтобы IMAP не дублировался в bot.py.
+Общее с ботом: DATABASE_URL (Postgres), BOT_TOKEN (только send_message, без polling).
+На сервисе бота: IMAP_DEDICATED_WORKER=1 — IMAP в bot.py не запускается.
 """
 from __future__ import annotations
 
@@ -29,6 +29,24 @@ def _truthy(name: str, default: str = "") -> bool:
     return (os.getenv(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _apply_imap_worker_defaults() -> None:
+    """Дефолты для отдельного IMAP-сервиса (можно переопределить в Railway Variables)."""
+    defaults = {
+        "MAX_IMAP_CONCURRENT": "20",
+        "INCOMING_MAIL_POLL_SECONDS": "120",
+        "IMAP_PER_ACCOUNT_INTERVAL_SEC": "120",
+        "IMAP_CYCLE_SLEEP_SEC": "10",
+        "IMAP_ACCOUNT_TIMEOUT_SEC": "45",
+        "IMAP_CONNECT_TIMEOUT_SEC": "25",
+        "IMAP_MAILING_PAUSE": "per_user",
+        "IMAP_ACCOUNTS_CACHE_SEC": "30",
+        "DB_POOL_SIZE": "15",
+        "DB_MAX_OVERFLOW": "25",
+    }
+    for key, val in defaults.items():
+        os.environ.setdefault(key, val)
+
+
 async def _worker_heartbeat() -> None:
     n = 0
     while True:
@@ -41,11 +59,32 @@ async def _worker_heartbeat() -> None:
         except Exception:
             diag = {}
         logger.info(
-            "💓 IMAP worker alive #%s max_concurrent=%s backoff_accounts=%s",
+            "💓 IMAP worker #%s · mailboxes=%s · due~%s · backoff=%s · max_conc=%s · interval=%ss",
             n,
-            diag.get("max_concurrent", "?"),
+            diag.get("tracked_mailboxes", "?"),
+            diag.get("due_for_poll_approx", "?"),
             len(diag.get("backoff_sec_by_account") or {}),
+            diag.get("max_concurrent", "?"),
+            diag.get("per_account_interval_sec", "?"),
         )
+
+
+async def _scheduler_watchdog() -> None:
+    """Если цикл планировщика завис — видно в логах."""
+    while True:
+        await asyncio.sleep(180)
+        try:
+            from services.incoming_mail_worker import incoming_mail_diag_snapshot
+
+            diag = incoming_mail_diag_snapshot()
+            ago = diag.get("scheduler_last_tick_ago_sec")
+            if ago is not None and int(ago) > 300:
+                logger.error(
+                    "IMAP scheduler не тикает %ss — проверь Postgres/прокси или перезапусти imap-worker",
+                    ago,
+                )
+        except Exception:
+            logger.exception("IMAP watchdog error")
 
 
 async def main() -> None:
@@ -53,6 +92,8 @@ async def main() -> None:
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
+
+    _apply_imap_worker_defaults()
 
     if not _truthy("ENABLE_INCOMING_MAIL"):
         logger.error(
@@ -64,10 +105,22 @@ async def main() -> None:
         logger.error("BOT_TOKEN пустой — нужен для пересылки писем в Telegram")
         sys.exit(1)
 
-    await init_db()
-    from database import engine as db_engine
+    from database import assert_persistent_database_or_exit, database_url_for_logs, is_persistent_database_url
 
-    logger.info("IMAP worker: БД %s, polling Telegram НЕ запускается", db_engine.dialect.name)
+    assert_persistent_database_or_exit()
+    await init_db()
+    from database import DATABASE_URL as _db_url, engine as db_engine
+
+    if is_persistent_database_url(_db_url):
+        logger.info(
+            "IMAP worker: PostgreSQL %s · Telegram polling ВЫКЛ",
+            database_url_for_logs(_db_url),
+        )
+    else:
+        logger.warning(
+            "IMAP worker: БД %s — для Railway нужен Postgres!",
+            db_engine.dialect.name,
+        )
 
     http_timeout = float(os.getenv("TELEGRAM_HTTP_TIMEOUT_SEC", "35"))
     session = AiohttpSession(timeout=http_timeout)
@@ -78,14 +131,10 @@ async def main() -> None:
     )
 
     me = await bot.get_me()
-    logger.info("IMAP worker: Bot @%s (id=%s) — только исходящие уведомления", me.username, me.id)
+    logger.info("IMAP worker: Bot @%s (id=%s) — только уведомления о письмах", me.username, me.id)
 
-    # На dedicated-воркере по умолчанию выше параллелизм, чем в bot.py (там 6).
-    os.environ.setdefault("MAX_IMAP_CONCURRENT", "16")
-    os.environ.setdefault("IMAP_MAILING_PAUSE", "slow")
-
-    poll_seconds = int(os.getenv("INCOMING_MAIL_POLL_SECONDS", "20"))
-    delay = int(os.getenv("INCOMING_MAIL_START_DELAY_SEC", "15"))
+    poll_seconds = int(os.getenv("INCOMING_MAIL_POLL_SECONDS", "120"))
+    delay = int(os.getenv("INCOMING_MAIL_START_DELAY_SEC", "10"))
     if delay > 0:
         logger.info("Старт опроса ящиков через %ss", delay)
         await asyncio.sleep(delay)
@@ -94,6 +143,13 @@ async def main() -> None:
 
     start_incoming_mail_worker(bot, poll_seconds=poll_seconds)
     asyncio.create_task(_worker_heartbeat())
+    asyncio.create_task(_scheduler_watchdog())
+
+    logger.info(
+        "IMAP worker running · ~%ss на ящик · MAX_IMAP_CONCURRENT=%s",
+        poll_seconds,
+        os.getenv("MAX_IMAP_CONCURRENT", "20"),
+    )
 
     try:
         await asyncio.Event().wait()

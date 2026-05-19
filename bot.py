@@ -211,6 +211,13 @@ def _release_single_instance_lock() -> None:
 
 
 async def _on_startup(bot: Bot) -> None:
+    from services.bot_commands import register_bot_commands
+
+    try:
+        await register_bot_commands(bot)
+    except Exception:
+        logger.exception("Не удалось зарегистрировать меню /start /send /stop /stat")
+
     wh = await bot.get_webhook_info()
     logger.info(
         "Telegram webhook: url=%r pending_updates=%s",
@@ -221,14 +228,17 @@ async def _on_startup(bot: Bot) -> None:
         logger.warning("Активен webhook %s — удаляю, нужен polling", wh.url)
         await bot.delete_webhook(drop_pending_updates=False)
 
-    if os.getenv("ENABLE_INCOMING_MAIL", "").strip() not in {"1", "true", "yes", "on"}:
-        logger.warning(
-            "IMAP worker ВЫКЛЮЧЕН. Railway → ENABLE_INCOMING_MAIL=1 или python imap_worker.py"
+    if os.getenv("IMAP_DEDICATED_WORKER", "").strip() in {"1", "true", "yes", "on"}:
+        logger.info(
+            "IMAP на отдельном сервисе (imap_worker.py). На боте: IMAP_DEDICATED_WORKER=1, "
+            "без ENABLE_INCOMING_MAIL"
         )
         return
 
-    if os.getenv("IMAP_DEDICATED_WORKER", "").strip() in {"1", "true", "yes", "on"}:
-        logger.info("IMAP на отдельном сервисе imap_worker")
+    if os.getenv("ENABLE_INCOMING_MAIL", "").strip() not in {"1", "true", "yes", "on"}:
+        logger.warning(
+            "IMAP в bot.py выключен. Отдельный воркер: python imap_worker.py + ENABLE_INCOMING_MAIL=1"
+        )
         return
 
     delay = int(os.getenv("INCOMING_MAIL_START_DELAY_SEC", "90"))
@@ -292,10 +302,16 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
 
-    await init_db()
-    from database import engine as _db_engine
+    from database import assert_persistent_database_or_exit, database_url_for_logs, is_persistent_database_url
 
-    logger.info("✅ БД готова (%s) · Finland / AQUA", _db_engine.dialect.name)
+    assert_persistent_database_or_exit()
+    await init_db()
+    from database import DATABASE_URL as _db_url, engine as _db_engine
+
+    if is_persistent_database_url(_db_url):
+        logger.info("✅ БД готова (PostgreSQL, persistent) · %s", database_url_for_logs(_db_url))
+    else:
+        logger.info("✅ БД готова (%s, локально) · Finland / AQUA", _db_engine.dialect.name)
 
     dp = Dispatcher()
     dp.startup.register(_on_startup)

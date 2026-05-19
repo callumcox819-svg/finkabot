@@ -8,10 +8,12 @@ numReplicas = 1
 #   AQUA_TEAM_API_KEY = ...   # общий X-Team-Key команды AQUA
 #   IMAP_DEDICATED_WORKER=1   — если IMAP на отдельном сервисе (см. ниже)
 #
-# Второй сервис в том же проекте Railway (тот же GitHub-репо):
+# Второй сервис «imap-worker» (тот же GitHub-репо):
 #   Start command: python imap_worker.py
 #   ENABLE_INCOMING_MAIL=1
-#   MAX_IMAP_CONCURRENT=12   (100+ ящиков)
-#   INCOMING_MAIL_POLL_SECONDS=20
-#   те же DATABASE_URL и BOT_TOKEN (polling не запускается — конфликта нет)
+#   DATABASE_URL = Reference Postgres (как у бота)
+#   BOT_TOKEN = тот же
+#   INCOMING_MAIL_POLL_SECONDS=120   (~2 мин на ящик)
+#   MAX_IMAP_CONCURRENT=20
+# На боте: IMAP_DEDICATED_WORKER=1, без ENABLE_INCOMING_MAIL
 # Подробно: RAILWAY_DATABASE.txt

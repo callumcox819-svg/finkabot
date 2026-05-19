@@ -23,7 +23,8 @@ class Config:
     _admins_env = os.getenv("ADMIN_IDS", "").strip()
     ADMIN_IDS = _parse_admin_ids(_admins_env) if _admins_env else []
 
-    DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///local.db")
+    # URL БД: см. database.py (там же проверка Postgres на Railway)
+    DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 
     VALIDEMAIL_URL = os.getenv("VALIDEMAIL_URL", "https://validemail.co/api/v1/validate").strip()
     VALIDEMAIL_API_KEY_1 = os.getenv("VALIDEMAIL_API_KEY_1", "").strip()

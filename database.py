@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import os
+import sys
 import logging
 from contextlib import asynccontextmanager
+from urllib.parse import urlparse
 
 from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -12,26 +14,102 @@ from models import Base
 
 log = logging.getLogger(__name__)
 
-DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+_LOCAL_SQLITE_FALLBACK = "sqlite+aiosqlite:///./bot.db"
 
-# Локальный запуск/тесты: если DATABASE_URL не задан — используем SQLite.
-# Это убирает падение вида: "Could not parse SQLAlchemy URL from string ''".
+
+def is_railway_runtime() -> bool:
+    return bool(
+        os.getenv("RAILWAY_ENVIRONMENT")
+        or os.getenv("RAILWAY_SERVICE_NAME")
+        or os.getenv("RAILWAY_PROJECT_ID")
+        or os.getenv("RAILWAY_DEPLOYMENT_ID")
+    )
+
+
+def _truthy_env(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_ephemeral_database_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    if not u:
+        return True
+    if "${{" in u or u.startswith("${"):
+        return True
+    return u.startswith("sqlite")
+
+
+def is_persistent_database_url(url: str) -> bool:
+    u = (url or "").strip().lower()
+    return u.startswith("postgresql") or u.startswith("postgres://")
+
+
+def normalize_database_url(raw: str) -> str:
+    url = (raw or "").strip()
+    if not url:
+        return ""
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://") and "+asyncpg" not in url:
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+def resolve_database_url() -> str:
+    """Источник правды для URL БД (config.py дублировать не нужно)."""
+    raw = (os.getenv("DATABASE_URL") or "").strip()
+    if raw:
+        return normalize_database_url(raw)
+    if is_railway_runtime():
+        return ""
+    return _LOCAL_SQLITE_FALLBACK
+
+
+def database_url_for_logs(url: str) -> str:
+    u = (url or "").strip()
+    if not u:
+        return "<empty>"
+    if u.startswith("sqlite"):
+        return u
+    try:
+        p = urlparse(u.replace("postgresql+asyncpg://", "postgresql://", 1))
+        host = p.hostname or "?"
+        port = f":{p.port}" if p.port else ""
+        db = (p.path or "").lstrip("/") or "?"
+        return f"postgresql://***@{host}{port}/{db}"
+    except Exception:
+        return "postgresql://***"
+
+
+def assert_persistent_database_or_exit(url: str | None = None) -> None:
+    """На Railway SQLite/пустой DATABASE_URL — данные пропадают при redeploy."""
+    db_url = normalize_database_url(url or resolve_database_url())
+    if not is_railway_runtime():
+        return
+    if _truthy_env("ALLOW_EPHEMERAL_DB"):
+        log.warning("ALLOW_EPHEMERAL_DB=1 — SQLite на Railway разрешён (данные НЕ сохраняются)")
+        return
+    if is_persistent_database_url(db_url):
+        return
+
+    log.critical("=" * 60)
+    log.critical("Railway: нужен PostgreSQL, иначе всё сбросится при redeploy!")
+    log.critical("DATABASE_URL сейчас: %s", database_url_for_logs(db_url))
+    log.critical("")
+    log.critical("1) В проекте Railway: + New → Database → PostgreSQL")
+    log.critical("2) Сервис бота → Variables → удали ПУСТУЮ DATABASE_URL")
+    log.critical("3) + New Variable → Variable Reference → Postgres → DATABASE_URL")
+    log.critical("4) Redeploy. В логах: «БД: PostgreSQL»")
+    log.critical("Подробно: RAILWAY_DATABASE.txt")
+    log.critical("=" * 60)
+    sys.exit(1)
+
+
+DATABASE_URL = resolve_database_url()
+assert_persistent_database_or_exit(DATABASE_URL)
+
 if not DATABASE_URL:
-    DATABASE_URL = "sqlite+aiosqlite:///./bot.db"
-    if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_NAME"):
-        log.error(
-            "Railway: переменная DATABASE_URL ПУСТАЯ. Удалите пустую переменную в Variables, "
-            "добавьте Reference на Postgres → DATABASE_URL (или вставьте URL из Postgres → Connect). "
-            "См. RAILWAY_DATABASE.txt"
-        )
-    else:
-        log.warning("DATABASE_URL is empty. Falling back to %s", DATABASE_URL)
-
-# Railway часто отдаёт postgres://, а SQLAlchemy asyncpg хочет postgresql+asyncpg://
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
-elif DATABASE_URL.startswith("postgresql://") and "+asyncpg" not in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    DATABASE_URL = _LOCAL_SQLITE_FALLBACK
 
 _engine_kwargs: dict = {"echo": False, "pool_pre_ping": True}
 if DATABASE_URL.startswith("sqlite"):
@@ -184,17 +262,16 @@ async def _ensure_conversation_links_tg_message_id_column() -> None:
 async def init_db() -> None:
     dialect = engine.dialect.name
     if dialect == "postgresql":
-        log.info("БД: PostgreSQL (данные сохраняются между перезапусками Railway)")
+        log.info(
+            "БД: PostgreSQL · %s (аккаунты, офферы, входящие, настройки — сохраняются при redeploy)",
+            database_url_for_logs(DATABASE_URL),
+        )
     else:
         log.warning(
-            "БД: %s — для Railway добавьте Postgres и переменную DATABASE_URL",
+            "БД: %s · %s (только локально; на Railway нужен Postgres)",
             dialect,
+            database_url_for_logs(DATABASE_URL),
         )
-        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_PROJECT_ID"):
-            log.error(
-                "RAILWAY без PostgreSQL: аккаунты/офферы/входящие пропадут при redeploy! "
-                "Postgres → Variables → DATABASE_URL (Reference). См. RAILWAY_DATABASE.txt"
-            )
 
     # создаём таблицы если нет
     async with engine.begin() as conn:
@@ -243,3 +320,9 @@ async def init_db() -> None:
         await _migrate_seller_blacklist_names()
     except Exception as e:
         log.error("Failed seller_blacklist name migration: %s", e)
+
+    if dialect == "postgresql":
+        log.info(
+            "Хранилище: user_settings, email_accounts, offers, incoming_mails, "
+            "user_json_blobs (шаблоны) — в Postgres"
+        )

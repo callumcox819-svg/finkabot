@@ -1,12 +1,7 @@
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-
+*.py[cod]
 .env
 *.db
-local.db
-bot.db
-.happy88_bot.pid
-
-boot.zip
+.venv/
+venv/
+.finland_bot.pid

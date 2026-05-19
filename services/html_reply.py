@@ -43,13 +43,14 @@ def _canon_email(email: str) -> str:
     return (email or "").strip().lower()
 
 
-def _format_chf_price(price: str) -> str:
+def _format_eur_price(price: str) -> str:
     p = (price or "").strip()
     if not p:
         return ""
-    if p.upper().startswith("CHF"):
+    up = p.upper()
+    if up.startswith("EUR") or up.startswith("€"):
         return p
-    return f"CHF {p}"
+    return f"EUR {p}"
 
 
 async def build_offer_html_ctx(
@@ -59,7 +60,7 @@ async def build_offer_html_ctx(
     *,
     link: str = "",
 ) -> dict[str, str]:
-    """Контекст для Post.ch HTML: оффер из БД + email продавца + AQUA-ссылка."""
+    """Контекст для HTML Posti/Tori: оффер из БД + email + AQUA-ссылка."""
     from sqlalchemy import select
 
     from models import Offer, OfferEmail
@@ -81,7 +82,7 @@ async def build_offer_html_ctx(
         ).scalars().first()
         if off:
             title = (off.title or "").strip()
-            price = _format_chf_price((off.price or "").strip())
+            price = _format_eur_price((off.price or "").strip())
             photo = (off.photo or "").strip()
     except Exception:
         pass
