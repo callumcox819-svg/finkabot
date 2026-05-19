@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from config import config
 from models import User
-from services.user_settings import get_user_setting
+from services.user_settings import get_user_setting, set_user_setting
 
 AQUA_SERVICE_KEY = "aqua_service"
 
