@@ -46,6 +46,8 @@ class Config:
         os.getenv("AQUA_PROFILES_LIST_PATH", "/api/generate/single/profile/list") or ""
     ).strip()
     AQUA_TEAM_PROFILES_JSON = (os.getenv("AQUA_TEAM_PROFILES_JSON") or "").strip()
+    # Обязательное фото для POST /api/generate/single/no-parse (если нет в оффере)
+    AQUA_DEFAULT_IMAGE_URL = (os.getenv("AQUA_DEFAULT_IMAGE_URL") or "").strip()
     COUNTRY_CODE = "FI"
     COUNTRY_LABEL = "Финляндия"
 

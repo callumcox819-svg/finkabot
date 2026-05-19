@@ -157,13 +157,33 @@ async def test_mail_send(message: Message, state: FSMContext):
                 link_note = ""
                 async with async_session() as session2:
                     raw_link = await pick_random_raw_link(session2)
+                    test_photo = ""
+                    test_price = ""
+                    photo_rows = (
+                        await session2.execute(
+                            select(Offer.photo, Offer.price)
+                            .where(Offer.user_id == user_id)
+                            .order_by(func.random())
+                            .limit(30)
+                        )
+                    ).all()
+                    for prow in photo_rows:
+                        p, pr = prow[0], prow[1]
+                        if (p or "").strip().startswith(("http://", "https://")):
+                            test_photo = (p or "").strip()
+                        if (pr or "").strip() and not test_price:
+                            test_price = (pr or "").strip()
+                        if test_photo:
+                            break
+                    if not test_price:
+                        test_price = "1"
                     if raw_link:
                         test_offer = Offer(
                             user_id=user_id,
                             title="TEST MAIL",
                             link=raw_link,
-                            price=None,
-                            photo=None,
+                            price=test_price,
+                            photo=test_photo or None,
                             person_name="TEST",
                         )
                         session2.add(test_offer)

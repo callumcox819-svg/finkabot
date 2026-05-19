@@ -40,6 +40,7 @@ from services.aqua_keys import (
 )
 from services.aqua_link import aqua_generate_for_offer
 from services.aqua_network import generate_aqua_link, AquaError
+from services.aqua_link import resolve_aqua_image_url
 from services.incoming_mail_worker import (
     FULL_META,
     _try_pin,
@@ -92,6 +93,12 @@ async def _aqua_generate_link(
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):
         raise AquaError("Не выбран сервис (Tori.fi / Posti.fi). 👤 Профиль → Выбор сервиса")
+    offer = None
+    if listing_url:
+        from services.offer_storage import find_offer_by_link
+
+        offer = await find_offer_by_link(session, user_id=int(user.id), ad_url=listing_url)
+    resolved_image = await resolve_aqua_image_url(session, user, offer, image)
     return await generate_aqua_link(
         user_api_key=user_key,
         team_api_key=team_key,
@@ -100,7 +107,7 @@ async def _aqua_generate_link(
         listing_url=listing_url,
         name=title,
         price=price,
-        image=image,
+        image=resolved_image,
     )
 
 

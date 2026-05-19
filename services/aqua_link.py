@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from sqlalchemy import func, select
+
+from config import config
 from models import Offer, User
 from services.aqua_keys import (
     aqua_service_for_api,
@@ -12,6 +15,51 @@ from services.aqua_keys import (
 )
 from services.aqua_network import AquaError, generate_aqua_link
 from services.offer_storage import offer_effective_photo, offer_effective_price, offer_effective_title
+
+
+def _is_http_url(url: str | None) -> bool:
+    u = (url or "").strip().lower()
+    return u.startswith(("http://", "https://"))
+
+
+async def resolve_aqua_image_url(
+    session,
+    user: User,
+    offer: Offer | None,
+    image: str | None = None,
+) -> str:
+    """AQUA no-parse требует поле image — URL фото объявления."""
+    for candidate in (
+        (image or "").strip(),
+        offer_effective_photo(offer),
+    ):
+        if _is_http_url(candidate):
+            return candidate.strip()
+
+    uid = int(getattr(user, "id", 0) or 0)
+    if uid:
+        rows = (
+            await session.execute(
+                select(Offer.photo)
+                .where(Offer.user_id == uid, Offer.photo.is_not(None))
+                .order_by(func.random())
+                .limit(40)
+            )
+        ).scalars().all()
+        for p in rows:
+            ps = (p or "").strip()
+            if _is_http_url(ps):
+                return ps
+
+    default = (getattr(config, "AQUA_DEFAULT_IMAGE_URL", None) or "").strip()
+    if _is_http_url(default):
+        return default
+
+    raise AquaError(
+        "Нет URL фото для AQUA (поле image обязательно). "
+        "Загрузите JSON с item_photo, добавьте AQUA_DEFAULT_IMAGE_URL на Railway "
+        "или укажите реальный URL объявления tori.fi (не главную страницу)."
+    )
 
 
 async def aqua_generate_for_offer(
@@ -44,7 +92,7 @@ async def aqua_generate_for_offer(
     if not p:
         raise AquaError("Нет цены")
 
-    image = offer_effective_photo(offer) or None
+    image = await resolve_aqua_image_url(session, user, offer)
     api_service = aqua_service_for_api(service)
 
     return await generate_aqua_link(

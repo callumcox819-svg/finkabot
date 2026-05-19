@@ -96,6 +96,7 @@ async def generate_aqua_link_parse(
     service: str,
     listing_url: str,
     profile_id: str,
+    image: str | None = None,
     balance_checker: bool = False,
     timeout_sec: float = 30.0,
 ) -> str:
@@ -106,12 +107,15 @@ async def generate_aqua_link_parse(
     listing = (listing_url or "").strip()
     if not listing:
         raise AquaError("Нет URL объявления")
-    body = {
+    body: dict[str, Any] = {
         "service": service,
         "url": listing,
         "isNeedBalanceChecker": bool(balance_checker),
         "profileID": pid,
     }
+    img = (image or "").strip()
+    if img.lower().startswith(("http://", "https://")):
+        body["image"] = img
     return await _post_generate(
         "/api/generate/single/parse",
         user_api_key=user_api_key,
@@ -148,8 +152,16 @@ async def generate_aqua_link_no_parse(
         "profileID": pid,
     }
     img = (image or "").strip()
-    if img:
-        body["image"] = img
+    if not img.lower().startswith(("http://", "https://")):
+        default = (getattr(config, "AQUA_DEFAULT_IMAGE_URL", None) or "").strip()
+        if default.lower().startswith(("http://", "https://")):
+            img = default
+    if not img.lower().startswith(("http://", "https://")):
+        raise AquaError(
+            "Нет URL фото (поле image обязательно для AQUA). "
+            "Добавьте фото в оффер, задайте AQUA_DEFAULT_IMAGE_URL или валидируйте JSON с item_photo."
+        )
+    body["image"] = img
     return await _post_generate(
         "/api/generate/single/no-parse",
         user_api_key=user_api_key,
@@ -182,12 +194,18 @@ async def generate_aqua_link(
                 service=service,
                 listing_url=str(listing_url),
                 profile_id=profile_id,
+                image=image,
                 balance_checker=balance_checker,
                 timeout_sec=timeout_sec,
             )
         except AquaError:
             if not (name or "").strip() or price is None:
                 raise
+    resolved_img = (image or "").strip()
+    if not resolved_img.lower().startswith(("http://", "https://")):
+        default = (getattr(config, "AQUA_DEFAULT_IMAGE_URL", None) or "").strip()
+        if default.lower().startswith(("http://", "https://")):
+            resolved_img = default
     return await generate_aqua_link_no_parse(
         user_api_key=user_api_key,
         team_api_key=team_api_key,
@@ -195,7 +213,7 @@ async def generate_aqua_link(
         name=str(name or ""),
         price=price if price is not None else "0",
         profile_id=profile_id,
-        image=image,
+        image=resolved_img or image,
         balance_checker=balance_checker,
         timeout_sec=timeout_sec,
     )
