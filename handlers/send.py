@@ -483,7 +483,14 @@ async def _handle_send_failure(
         return True
 
   # Ошибки прокси/таймаут — адрес остаётся в очереди (повтор на следующих кругах).
-    if "RECIPIENT_DEAD" in err or "5.1.1" in err:
+    err_u = (err or "").upper()
+    if (
+        "RECIPIENT_DEAD" in err_u
+        or "5.1.1" in err_u
+        or "5.5.0" in err_u
+        or "MAILBOX UNAVAILABLE" in err_u
+        or "ADDRESS NOT FOUND" in err_u
+    ):
         await _purge_target(session, db_user_id, int(tgt.id))
     return False
 

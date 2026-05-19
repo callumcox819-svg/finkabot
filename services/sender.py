@@ -226,8 +226,10 @@ _HARD_PATTERNS = [
     r"recipient address rejected",
     r"no such user",
     r"mailbox unavailable",
+    r"address not found",
     r"5\.1\.1",
     r"5\.1\.0",
+    r"5\.5\.0",
 ]
 
 

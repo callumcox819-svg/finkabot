@@ -180,6 +180,12 @@ def _is_mailer_daemon_notice(from_email: str, subject: str) -> bool:
     return "delivery status notification" in s
 
 
+def _is_recipient_delivery_failure_bounce(subject: str, body: str) -> bool:
+    from services.bounce_recipient import is_recipient_delivery_failure_bounce
+
+    return is_recipient_delivery_failure_bounce(subject, body)
+
+
 def _is_smtp_block_bounce(from_email: str, subject: str, body: str) -> bool:
     """Gmail block / лимит — снимаем ящик с SMTP, оставляем IMAP."""
     s = (subject or "").lower()
@@ -1146,6 +1152,12 @@ async def _process_mails_for_account_impl(
                 continue
         # Только явный Gmail block / 5.7.1 — не любой DSN об недоставке получателю.
         smtp_block_bounce = _is_smtp_block_bounce(from_email, subject, body)
+        from_email_clean_pre = (from_email or "").strip().lower()
+        recipient_dsn_bounce = (
+            not smtp_block_bounce
+            and _is_mailer_daemon_notice(from_email_clean_pre, subject or "")
+            and _is_recipient_delivery_failure_bounce(subject or "", body or "")
+        )
 
         if (not is_spam_box) and _looks_like_spam(from_email, from_name, subject, body):
             continue
@@ -1156,7 +1168,11 @@ async def _process_mails_for_account_impl(
             skip_telegram_notify = _is_google_system_mail(
                 from_email_clean, from_name or "", subject or ""
             )
-            if smtp_block_bounce or _is_mailer_daemon_notice(from_email_clean, subject or ""):
+            if smtp_block_bounce:
+                skip_telegram_notify = False
+            elif recipient_dsn_bounce:
+                skip_telegram_notify = True
+            elif _is_mailer_daemon_notice(from_email_clean, subject or ""):
                 skip_telegram_notify = False
             inbox_email_clean = (account_email or "").strip().lower()
 
@@ -1259,6 +1275,29 @@ async def _process_mails_for_account_impl(
 
             except Exception:
                 logger.exception("Failed to persist IncomingMail acc=%s uid=%s", acc_id, uid)
+
+            if recipient_dsn_bounce:
+                try:
+                    from services.bounce_recipient import purge_from_dsn_body
+
+                    async with _imap_db_session() as session:
+                        removed, bounced_addr = await purge_from_dsn_body(
+                            session,
+                            user_id=int(user_id),
+                            subject=subject or "",
+                            body=body_clean or "",
+                        )
+                    if removed and bounced_addr:
+                        logger.info(
+                            "recipient DSN: removed %s queue rows for %s user=%s",
+                            removed,
+                            bounced_addr,
+                            user_id,
+                        )
+                except Exception:
+                    logger.exception("Failed to purge bounced recipient user=%s", user_id)
+                forwarded += 1
+                continue
 
             if skip_telegram_notify:
                 forwarded += 1
