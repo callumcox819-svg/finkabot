@@ -1,0 +1,64 @@
+Как подключить Postgres на Railway (если в логах «sqlite» или DATABASE_URL пустой)
+==================================================================================
+
+ПРОБЛЕМА: в Variables у cursorbot DATABASE_URL = <empty string>
+→ бот не видит базу и пишет в bot.db (данные пропадают при redeploy).
+
+ШАГ 1 — Postgres в проекте
+--------------------------
+В canvas должен быть отдельный блок «PostgreSQL» (не только cursorbot).
+Если нет: + New → Database → PostgreSQL.
+
+ШАГ 2 — УДАЛИ пустую переменную
+--------------------------------
+Сервис cursorbot → Variables → удали переменную DATABASE_URL,
+если значение пустое (<empty string>).
+
+НЕ вводи вручную текст:  ${{Postgres.DATABASE_URL}}
+В новом Railway это часто НЕ подставляется и остаётся пустой строкой.
+
+ШАГ 2б — правильно: Reference (ссылка)
+---------------------------------------
+1. cursorbot → Variables → «+ New Variable»
+2. Выбери тип **Variable Reference** (не обычный Variable)
+3. Service: твой Postgres (имя как на canvas, например Postgres)
+4. Variable: **DATABASE_URL**
+5. Save
+
+Должно быть примерно так:
+   DATABASE_URL  →  ${{Postgres.DATABASE_URL}}   (иконка ссылки, не пусто)
+
+ШАГ 2в — альтернатива: вставить URL вручную
+--------------------------------------------
+1. Открой сервис **PostgreSQL** (не cursorbot)
+2. Вкладка **Connect** или **Variables** — скопируй **DATABASE_URL**
+   (начинается с postgresql:// или postgres://)
+3. cursorbot → Variables → + New Variable
+4. Name: DATABASE_URL
+5. Value: вставь скопированный URL целиком
+6. Save
+
+ШАГ 3 — Redeploy
+------------------
+cursorbot → Deployments → **Redeploy** (или Apply 1 Change).
+
+ШАГ 4 — проверка логов
+------------------------
+Должно быть:
+   БД: PostgreSQL (данные сохраняются между перезапусками Railway)
+
+НЕ должно быть:
+   DATABASE_URL is empty
+   БД: sqlite
+
+Переменные бота
+---------------
+   BOT_TOKEN = токен от @BotFather
+   DATABASE_URL = Reference на Postgres ИЛИ полный URL (не пусто!)
+   Replicas = 1
+
+Не ставь BOT_OPEN_ACCESS (бот закрытый).
+
+IMAP на 100+ ящиков (отдельный сервис)
+--------------------------------------
+См. пошаговую инструкцию: RAILWAY_IMAP_WORKER.txt
