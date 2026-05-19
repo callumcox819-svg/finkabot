@@ -46,6 +46,12 @@ router = Router(name="send")
 logger = logging.getLogger(__name__)
 
 
+async def _edit_status_text(status_msg: Message, text: str, **kwargs) -> None:
+    """edit_text принимает только InlineKeyboardMarkup, не ReplyKeyboardMarkup."""
+    kwargs.pop("reply_markup", None)
+    await status_msg.edit_text(text, **kwargs)
+
+
 # ============================================================
 # 🔒 Совместимость API состояния рассылки
 #
@@ -236,6 +242,37 @@ async def start_sending(message: Message):
 
     status_msg = await message.answer("⏳ Проверяю очередь и аккаунты…", parse_mode="HTML")
 
+    try:
+        await _start_sending_inner(
+            message=message,
+            status_msg=status_msg,
+            tg_user_id=tg_user_id,
+            chat_id=chat_id,
+            bot=bot,
+        )
+    except Exception:
+        logger.exception("start_sending failed tg=%s", tg_user_id)
+        try:
+            await _edit_status_text(
+                status_msg,
+                "❌ Ошибка запуска рассылки. Попробуйте /send снова.",
+            )
+        except Exception:
+            await tg_answer_safe(
+                message,
+                "❌ Ошибка запуска рассылки. Попробуйте /send снова.",
+                reply_markup=main_menu_kb(tg_user_id),
+            )
+
+
+async def _start_sending_inner(
+    *,
+    message: Message,
+    status_msg: Message,
+    tg_user_id: int,
+    chat_id: int,
+    bot: Bot,
+) -> None:
     async with db_session() as session:
         db_user = await get_or_create_user(session, int(tg_user_id))
 
@@ -249,22 +286,22 @@ async def start_sending(message: Message):
         total_targets = await _get_targets_count(session, db_user_id)
 
         if not accounts:
-            await status_msg.edit_text(
+            await _edit_status_text(
+                status_msg,
                 "❌ Нет активных аккаунтов.\nДобавьте почту в «Настройки → Аккаунты».",
-                reply_markup=main_menu_kb(tg_user_id),
             )
             return
 
         if total_targets <= 0:
-            await status_msg.edit_text(
+            await _edit_status_text(
+                status_msg,
                 "❌ Очередь пуста — нет email в БД после валидации.",
-                reply_markup=main_menu_kb(tg_user_id),
             )
             return
 
         state = get_sending_state(tg_user_id)
         if state and getattr(state, "is_running", False):
-            await status_msg.edit_text("⚠️ Рассылка уже запущена.")
+            await _edit_status_text(status_msg, "⚠️ Рассылка уже запущена.")
             return
 
         from proxy_manager import is_socks5_proxy
@@ -275,14 +312,15 @@ async def start_sending(message: Message):
         socks_total = sum(1 for p in all_px if is_socks5_proxy(p))
 
         if socks_total <= 0:
-            await status_msg.edit_text(
+            await _edit_status_text(
+                status_msg,
                 "❌ Нет SOCKS5 прокси. Добавьте socks5://… в «Прокси».",
-                reply_markup=main_menu_kb(tg_user_id),
             )
             return
 
     try:
-        await status_msg.edit_text(
+        await _edit_status_text(
+            status_msg,
             "⏳ Проверяю SOCKS5 (туннель + SMTP+STARTTLS)…\n"
             "<i>Это может занять 1–2 минуты.</i>",
             parse_mode="HTML",
@@ -295,10 +333,10 @@ async def start_sending(message: Message):
     px_ok, px_summary, px_detail = await preflight_proxies_for_mailing(int(db_user_id))
     if not px_ok:
         try:
-            await status_msg.edit_text(
+            await _edit_status_text(
+                status_msg,
                 "❌ <b>Рассылка не запущена</b>\n\n" + px_detail,
                 parse_mode="HTML",
-                reply_markup=main_menu_kb(tg_user_id),
             )
         except Exception:
             await tg_answer_safe(
@@ -334,7 +372,8 @@ async def start_sending(message: Message):
     from services.smtp_proxy_send import MAIL_SMTP_MAX_PROXIES, MAIL_SMTP_TIMEOUT_SEC
 
     try:
-        await status_msg.edit_text(
+        await _edit_status_text(
+            status_msg,
             "✅ <b>Рассылка запущена</b>\n"
             f"В очереди: <b>{total_targets}</b> · ящиков active: <b>{len(accounts)}</b>\n"
             f"{px_detail}\n"
@@ -344,7 +383,6 @@ async def start_sending(message: Message):
             f"Прокси: до <b>{MAIL_SMTP_MAX_PROXIES}</b> × <b>{MAIL_SMTP_TIMEOUT_SEC}</b> с · "
             f"повторов <b>{MAIL_SEND_RETRIES}</b>\n\n"
             "<i>Ящик с Message blocked снимается с рассылки, IMAP остаётся.</i>",
-            reply_markup=main_menu_kb(tg_user_id),
             parse_mode="HTML",
         )
     except Exception:
