@@ -33,6 +33,7 @@ from services.aqua_keys import (
     aqua_service_for_api,
     aqua_service_for_html_dir,
     get_user_aqua_api_keys_async,
+    get_user_aqua_profile_display,
     get_user_aqua_service,
     get_user_goo_profile_id,
     is_valid_aqua_service,
@@ -64,9 +65,6 @@ def _incoming_smtp_wait_sec() -> int:
 REPLY_CHOICE_TEXT = "Выберите вариант"
 
 COUNTRY_KEY = "country"
-AQUA_PROFILE_TITLE_KEY = "aqua_profile_title"
-AQUA_PROFILE_NAME_KEY = "aqua_profile_name"
-AQUA_PROFILE_ADDRESS_KEY = "aqua_profile_address"
 HTML_NICK_KEY = "html_nick"
 HTML_SIGNATURE_KEY = "html_signature"
 HTML_SUBJECT_KEY = "html_subject_theme"
@@ -83,12 +81,14 @@ async def _aqua_generate_link(
 ) -> str:
     user_key, team_key = await get_user_aqua_api_keys_async(session, user)
     if not user_key:
-        raise AquaError("User API key AQUA не установлен. ⚙️ → 🔑 Ключ")
+        raise AquaError("Личный API key AQUA не установлен. ⚙️ → 🔑 Ключ")
     if not team_key:
-        raise AquaError("Team API key AQUA не установлен. ⚙️ → 🔑 Ключ")
+        raise AquaError(
+            "Ключ команды AQUA не задан на сервере (переменная AQUA_TEAM_API_KEY)."
+        )
     profile_id = get_user_goo_profile_id(user)
     if not profile_id:
-        raise AquaError("Не задан profileID GOO. ⚙️ → 🧾 Профиль → Profile ID")
+        raise AquaError("Не выбран профиль AQUA. ⚙️ → 🧾 Профиль → Выбрать профиль")
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):
         raise AquaError("Не выбран сервис (Tori.fi / Posti.fi). 👤 Профиль → Выбор сервиса")
@@ -1524,13 +1524,17 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
         meta_fm = FULL_META.get((acc_id, mail_uid)) or {}
         anchor = _resolve_mail_anchor(acc_id, mail_uid, meta_fm, callback.message)
         inbox_label = (getattr(tg_user, "sender_name", None) or "").strip()
+        service = await get_user_aqua_service(session, tg_user)
+        prof_display = (
+            await get_user_aqua_profile_display(session, tg_user) or ""
+        ).strip() or "—"
 
         await _send_generated_link_card(
             callback=callback,
             offer_title=offer_title or title,
             offer_price=price,
             photo_url=offer_image,
-            profile_display=prof_title,
+            profile_display=prof_display,
             service_code=service,
             link=aqua_url,
             offer_id=offer_id,
@@ -1714,7 +1718,9 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
             return await callback.answer()
 
         service = await get_user_aqua_service(session, user)
-        prof_title = (await get_user_setting(session, user, AQUA_PROFILE_TITLE_KEY) or "").strip() or "—"
+        prof_display = (
+            await get_user_aqua_profile_display(session, user) or ""
+        ).strip() or "—"
 
         try:
             aqua_url = await _aqua_generate_link(
@@ -1752,7 +1758,7 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
             offer_title=offer_title or title,
             offer_price=price,
             photo_url=offer_image,
-            profile_display=prof_title,
+            profile_display=prof_display,
             service_code=service,
             link=aqua_url,
             offer_id=offer_id,
@@ -2730,7 +2736,7 @@ async def _regenerate_aqua_link_after_price(
             "offer_price": new_price,
             "photo_url": offer_effective_photo(offer) or None,
             "profile_display": (
-                await get_user_setting(session, user, AQUA_PROFILE_TITLE_KEY) or ""
+                await get_user_aqua_profile_display(session, user) or ""
             ).strip()
             or None,
             "service_code": (await get_user_aqua_service(session, user) or "").strip(),

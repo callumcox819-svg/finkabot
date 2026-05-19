@@ -84,8 +84,7 @@ def mailing_send_timeouts() -> int:
     return mailing_send_overall_timeout_sec()
 
 # user settings keys (уже используются в проекте)
-AQUA_PROFILE_NAME_KEY = "aqua_profile_name"
-AQUA_PROFILE_ADDRESS_KEY = "aqua_profile_address"
+from services.aqua_keys import AQUA_PROFILE_ADDRESS_KEY, AQUA_PROFILE_NAME_KEY
 
 
 async def _safe_commit(session: AsyncSession):

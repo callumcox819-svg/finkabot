@@ -39,6 +39,12 @@ class Config:
 
     # AQUA / GOO NETWORK (Финляндия)
     GOO_API_BASE = os.getenv("GOO_API_BASE", "https://api.goo.network").strip().rstrip("/")
+    # Общий ключ команды AQUA (X-Team-Key) — один на всех пользователей бота
+    AQUA_TEAM_API_KEY = (os.getenv("AQUA_TEAM_API_KEY") or "").strip()
+    AQUA_PROFILES_LIST_PATH = (
+        os.getenv("AQUA_PROFILES_LIST_PATH", "/api/generate/single/profile/list") or ""
+    ).strip()
+    AQUA_TEAM_PROFILES_JSON = (os.getenv("AQUA_TEAM_PROFILES_JSON") or "").strip()
     COUNTRY_CODE = "FI"
     COUNTRY_LABEL = "Финляндия"
 

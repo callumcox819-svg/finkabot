@@ -54,7 +54,7 @@ async def set_validemail_api_key(session: Session, api_key: str | None) -> None:
 
 
 async def get_aqua_api_key(session: Session) -> str | None:
-    """Ключи AQUA — per-user (goo_user_api_key_aqua / goo_team_api_key_aqua)."""
+    """Ключи AQUA: user — per-user; team — config.AQUA_TEAM_API_KEY."""
     return None
 
 

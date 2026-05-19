@@ -24,13 +24,13 @@ async def aqua_generate_for_offer(
 ) -> str:
     user_key, team_key = await get_user_aqua_api_keys_async(session, user)
     if not user_key:
-        raise AquaError("Не задан User API key. ⚙️ → 🔑 Ключ → User API key")
+        raise AquaError("Не задан личный API key. ⚙️ → 🔑 Ключ")
     if not team_key:
-        raise AquaError("Не задан Team API key. ⚙️ → 🔑 Ключ → Team API key")
+        raise AquaError("Ключ команды AQUA не задан на сервере (AQUA_TEAM_API_KEY).")
 
     profile_id = get_user_goo_profile_id(user)
     if not profile_id:
-        raise AquaError("Не задан profileID GOO. ⚙️ → 🧾 Профиль → Profile ID")
+        raise AquaError("Не выбран профиль AQUA. ⚙️ → 🧾 Профиль → Выбрать профиль")
 
     service = await get_user_aqua_service(session, user)
     if not is_valid_aqua_service(service):

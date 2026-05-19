@@ -5,6 +5,7 @@ numReplicas = 1
 # Сервис «bot»:
 #   DATABASE_URL = ${{Postgres.DATABASE_URL}}
 #   BOT_TOKEN = ...
+#   AQUA_TEAM_API_KEY = ...   # общий X-Team-Key команды AQUA
 #   IMAP_DEDICATED_WORKER=1   — если IMAP на отдельном сервисе (см. ниже)
 #
 # Второй сервис в том же проекте Railway (тот же GitHub-репо):
