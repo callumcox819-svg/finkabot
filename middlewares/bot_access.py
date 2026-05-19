@@ -20,6 +20,14 @@ _ACCESS_CACHE: dict[int, tuple[bool, bool, float]] = {}
 _ACCESS_CACHE_TTL_SEC = float(__import__("os").getenv("BOT_ACCESS_CACHE_TTL_SEC", "25"))
 _ACCESS_DB_TIMEOUT_SEC = float(__import__("os").getenv("BOT_ACCESS_DB_TIMEOUT_SEC", "8"))
 
+
+def invalidate_access_cache(telegram_id: int | None = None) -> None:
+    """Сброс кэша после выдачи/отзыва доступа или админки в админ-панели."""
+    if telegram_id is None:
+        _ACCESS_CACHE.clear()
+        return
+    _ACCESS_CACHE.pop(int(telegram_id), None)
+
 ACCESS_DENIED_TEXT = (
     "⛔ У тебя нет доступа к использованию этого бота. Обратись к администратору."
 )

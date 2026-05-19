@@ -15,10 +15,21 @@ from services.users import get_or_create_user
 from sqlalchemy import select, func
 
 from models import EmailAccount, SentEmail, OfferEmail, Offer, User
-from services.bot_roles import user_is_admin as is_admin
+from services.bot_roles import user_is_admin as is_admin, config_admin_ids
+from middlewares.bot_access import invalidate_access_cache
 
 
 router = Router(name="admin_panel")
+
+
+async def _notify_user_menu(bot, tid: int, *, is_admin_user: bool, text: str) -> bool:
+    try:
+        from keyboards.main_menu import main_menu_kb_for
+
+        await bot.send_message(tid, text, reply_markup=await main_menu_kb_for(tid))
+        return True
+    except Exception:
+        return False
 
 
 class AdminState(StatesGroup):
@@ -33,9 +44,9 @@ def admin_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="📊 Статистика пользователей", callback_data="admin_user_stats")],
-            [InlineKeyboardButton(text="✅ Выдать доступ", callback_data="admin_allow")],
-            [InlineKeyboardButton(text="⛔ Удалить доступ", callback_data="admin_deny")],
-            [InlineKeyboardButton(text="👑 Выдать админ права", callback_data="admin_grant_admin")],
+            [InlineKeyboardButton(text="✅ Доступ к боту", callback_data="admin_allow")],
+            [InlineKeyboardButton(text="⛔ Забрать доступ", callback_data="admin_deny")],
+            [InlineKeyboardButton(text="👑 Админ-права (панель)", callback_data="admin_grant_admin")],
             [InlineKeyboardButton(text="🔄 Рестарт", callback_data="admin_restart")],
         ]
     )
@@ -68,7 +79,10 @@ async def admin_allow_begin(callback: CallbackQuery, state: FSMContext) -> None:
         return
     await state.set_state(AdminState.waiting_allow)
     await callback.message.edit_text(
-        "✅ <b>Выдать доступ</b>\n\nОтправь Telegram ID пользователя.",
+        "✅ <b>Доступ к боту</b> (рассылка, настройки)\n\n"
+        "<i>Кнопки «👑 Админ-панель» не будет — для этого раздел «👑 Админ-права».</i>\n\n"
+        "Отправь Telegram ID пользователя.",
+        parse_mode="HTML",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]]),
     )
     await callback.answer()
@@ -88,8 +102,23 @@ async def admin_allow_finish(message: Message, state: FSMContext) -> None:
         u.is_banned = False
         u.access_granted = True
         await session.commit()
+    invalidate_access_cache(tid)
     await state.clear()
-    await message.answer(f"✅ Доступ выдан: <code>{tid}</code>")
+    await message.answer(
+        f"✅ Доступ к боту выдан: <code>{tid}</code>\n"
+        "<i>Админ-панель не выдана — при необходимости: 👑 Админ-права → ➕ Выдать.</i>",
+        parse_mode="HTML",
+    )
+    if not await _notify_user_menu(
+        message.bot,
+        tid,
+        is_admin_user=False,
+        text="✅ Вам выдан доступ к боту. Нажмите /start, если меню не обновилось.",
+    ):
+        await message.answer(
+            f"⚠️ Не удалось написать пользователю <code>{tid}</code> — пусть нажмёт /start.",
+            parse_mode="HTML",
+        )
     await message.answer("👑 <b>Админ-панель</b>", reply_markup=admin_kb())
 
 
@@ -118,8 +147,10 @@ async def admin_deny_finish(message: Message, state: FSMContext) -> None:
     async with Session() as session:
         u = await get_or_create_user(session, tid)
         u.access_granted = False
+        u.is_admin = False
         u.is_banned = False
         await session.commit()
+    invalidate_access_cache(tid)
     await state.clear()
     await message.answer(f"⛔ Доступ удалён: <code>{tid}</code>")
     await message.answer("👑 <b>Админ-панель</b>", reply_markup=admin_kb())
@@ -191,7 +222,8 @@ async def admin_stats_finish(message: Message, state: FSMContext) -> None:
     await message.answer(
         "📊 <b>Статистика</b>\n"
         f"Telegram ID: <code>{tid}</code>\n"
-        f"Доступ: <b>{'✅ есть' if getattr(u, 'access_granted', False) and not getattr(u, 'is_banned', False) else '⛔ нет'}</b>\n\n"
+        f"Доступ: <b>{'✅ есть' if getattr(u, 'access_granted', False) and not getattr(u, 'is_banned', False) else '⛔ нет'}</b>\n"
+        f"Админ: <b>{'👑 да' if getattr(u, 'is_admin', False) or tid in config_admin_ids() else 'нет'}</b>\n\n"
         f"📮 Аккаунтов: <b>{total_accounts}</b>\n"
         f"📧 Валидных email: <b>{validated}</b>\n"
         f"✉️ Отправлено (антидубль): <b>{sent_count}</b>",
@@ -269,23 +301,53 @@ async def admin_grant_admin_finish(message: Message, state: FSMContext) -> None:
         user.is_admin = True
         user.access_granted = True
         await session.commit()
+    invalidate_access_cache(tid)
     await state.clear()
-    await message.answer(f"✅ Админ права выданы пользователю <code>{tid}</code>.")
-    try:
-        from keyboards.main_menu import main_menu_kb_for
-
-        await message.bot.send_message(
-            tid,
+    await message.answer(f"✅ Админ-права выданы: <code>{tid}</code> (сохранено в Postgres).")
+    if not await _notify_user_menu(
+        message.bot,
+        tid,
+        is_admin_user=True,
+        text=(
             "👑 Вам выданы права администратора.\n"
-            "Меню обновлено — доступны «👑 Админ-панель» и «🧪 Тест маил».",
-            reply_markup=await main_menu_kb_for(tid),
-        )
-    except Exception:
+            "В меню: «👑 Админ-панель» и «🧪 Тест маил»."
+        ),
+    ):
         await message.answer(
-            f"⚠️ Не удалось отправить меню пользователю <code>{tid}</code>. "
-            "Пусть нажмёт /start в боте.",
+            f"⚠️ Не удалось отправить меню <code>{tid}</code>. Пусть нажмёт /start.",
             parse_mode="HTML",
         )
+    await open_admin(message)
+
+
+@router.message(AdminState.waiting_revoke_admin)
+async def admin_revoke_admin_finish(message: Message, state: FSMContext) -> None:
+    if not await is_admin(message.from_user.id):
+        return
+    try:
+        tid = int((message.text or "").strip())
+    except Exception:
+        await message.answer("❌ Неверный ID. Отправь число.")
+        return
+    if tid in config_admin_ids():
+        await message.answer(
+            "⛔ Этот ID в ADMIN_IDS на сервере — убрать из env, а не через бота.",
+            parse_mode="HTML",
+        )
+        return
+    async with Session() as session:
+        user = await get_or_create_user(session, tid)
+        user.is_admin = False
+        await session.commit()
+    invalidate_access_cache(tid)
+    await state.clear()
+    await message.answer(f"➖ Админ-права сняты: <code>{tid}</code>. Доступ к боту сохранён.")
+    await _notify_user_menu(
+        message.bot,
+        tid,
+        is_admin_user=False,
+        text="Админ-права сняты. Меню обновлено — /start при необходимости.",
+    )
     await open_admin(message)
 
 

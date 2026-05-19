@@ -337,3 +337,12 @@ async def init_db() -> None:
             "Хранилище: user_settings, email_accounts, offers, incoming_mails, "
             "user_json_blobs (шаблоны) — в Postgres"
         )
+
+    try:
+        from services.users import sync_config_admins_to_db
+
+        n = await sync_config_admins_to_db()
+        if n:
+            log.info("Синхронизировано админов из ADMIN_IDS в БД: %s", n)
+    except Exception as e:
+        log.error("sync_config_admins_to_db failed: %s", e)
