@@ -154,14 +154,7 @@ async def test_mail_send(message: Message, state: FSMContext):
                 except Exception:
                     pass
 
-                await status.edit_text(
-                    "✅ <b>Отправка через прокси прошла</b> (SMTP принял письмо)\n\n"
-                    f"Кому: <code>{to_email}</code>\n"
-                    f"От: <code>{acc_email}</code>\n"
-                    f"Тема: {subject}"
-                    f"{imap_extra}",
-                    parse_mode="HTML",
-                )
+                link_note = ""
                 async with async_session() as session2:
                     raw_link = await pick_random_raw_link(session2)
                     if raw_link:
@@ -177,6 +170,26 @@ async def test_mail_send(message: Message, state: FSMContext):
                         await session2.flush()
                         session2.add(OfferEmail(offer_id=test_offer.id, email=to_email))
                         await session2.commit()
+                        link_note = (
+                            f"\n\n🔗 Для «Создать ссылку»: ответ с <code>{to_email}</code>\n"
+                            f"<code>{raw_link[:120]}</code>"
+                        )
+                    else:
+                        link_note = (
+                            "\n\n⚠️ <b>Ссылка для теста не записана в БД</b> — "
+                            "«Создать ссылку» на ответе не сработает.\n"
+                            "Добавьте tori.fi в офферы или <code>data/test_links.txt</code>."
+                        )
+
+                await status.edit_text(
+                    "✅ <b>Отправка через прокси прошла</b> (SMTP принял письмо)\n\n"
+                    f"Кому: <code>{to_email}</code>\n"
+                    f"От: <code>{acc_email}</code>\n"
+                    f"Тема: {subject}"
+                    f"{imap_extra}"
+                    f"{link_note}",
+                    parse_mode="HTML",
+                )
             else:
                 err_s = err or "unknown"
                 if is_smtp_account_block_error(err_s):
@@ -198,9 +211,16 @@ async def test_mail_send(message: Message, state: FSMContext):
 
 
 def _is_valid_ad_link(url: str) -> bool:
+    """Ссылки для тест-оффера (AQUA: tori.fi / posti.fi)."""
     if not url:
         return False
     u = url.lower().strip()
+    if not u.startswith(("http://", "https://")):
+        return False
+    if "tori.fi" in u or "posti.fi" in u:
+        return True
+    if "tutti.ch" in u:
+        return True
     if "kleinanzeigen.de" in u:
         return True
     if "ebay." in u and ".de" in u:
