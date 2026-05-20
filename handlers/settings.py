@@ -728,7 +728,7 @@ async def themes_menu(callback: CallbackQuery, state: FSMContext):
         inline_keyboard=[
             *preset_rows,
             [InlineKeyboardButton(text="✏️ Свой шаблон", callback_data="themes_edit")],
-            [InlineKeyboardButton(text="🗑 Сброс (Re: OFFER)", callback_data="themes_clear")],
+            [InlineKeyboardButton(text="🗑 Сброс (по умолчанию)", callback_data="themes_clear")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
         ]
     )
@@ -817,7 +817,7 @@ async def _themes_menu_after_save(message: Message, state: FSMContext, cur_show:
         inline_keyboard=[
             *preset_rows,
             [InlineKeyboardButton(text="✏️ Свой шаблон", callback_data="themes_edit")],
-            [InlineKeyboardButton(text="🗑 Сброс (Re: OFFER)", callback_data="themes_clear")],
+            [InlineKeyboardButton(text="🗑 Сброс (по умолчанию)", callback_data="themes_clear")],
             [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
         ]
     )

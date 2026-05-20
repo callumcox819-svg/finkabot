@@ -16,20 +16,20 @@ def sanitize_email_subject(text: str) -> str:
 
 SUBJECT_TEMPLATE_SETTING = "subject_template"
 
-# Готовые шаблоны (⚙️ → Темы): OFFER заменяется на название объявления
+# Готовые шаблоны (⚙️ → Темы): OFFER = название объявления (фин. текст в теме)
 MAILING_SUBJECT_PRESETS: tuple[tuple[str, str], ...] = (
-    ("re_offer", "Re: OFFER"),
-    ("tuote", "Tuote: OFFER"),
     ("kysymys", "Kysymys: OFFER"),
-    ("viesti", "Viesti – OFFER"),
+    ("tuote", "Tuote: OFFER"),
     ("osto", "Osto: OFFER"),
+    ("viesti", "Viesti – OFFER"),
+    ("re_offer", "Re: OFFER"),
     ("plain", "OFFER"),
 )
 
 
 def global_subject_template() -> str:
-    tpl = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "Re: OFFER").strip()
-    return tpl or "Re: OFFER"
+    tpl = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "Kysymys: OFFER").strip()
+    return tpl or "Kysymys: OFFER"
 
 
 async def resolve_mailing_subject_template(session, user) -> str:

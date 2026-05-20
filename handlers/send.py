@@ -235,7 +235,7 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
     if mailing_plain_only_enabled():
         body = ensure_plain_mail_body(body)
 
-    # Тема: шаблон из ⚙️ Темы или Re: OFFER по умолчанию
+    # Тема: шаблон из ⚙️ Темы (по умолчанию Kysymys: OFFER)
     from services.subject_offer import resolve_mailing_subject_template, subject_for_offer
 
     subject_tpl = await resolve_mailing_subject_template(session, user)
