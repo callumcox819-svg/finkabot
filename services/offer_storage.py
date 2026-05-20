@@ -186,13 +186,27 @@ def emails_from_validated_row(row: dict[str, Any] | None, norm_email) -> list[st
         return []
     picked: list[str] = []
     seen: set[str] = set()
-    for e in row.get("emails") or []:
-        e2 = norm_email(str(e or ""))
-        if not e2 or e2 in seen:
-            continue
-        seen.add(e2)
-        picked.append(e2)
+    for key in ("emails", "validated_emails"):
+        for e in row.get(key) or []:
+            e2 = norm_email(str(e or ""))
+            if not e2 or e2 in seen:
+                continue
+            seen.add(e2)
+            picked.append(e2)
     return picked
+
+
+def match_validated_row_for_item(
+    item: dict[str, Any],
+    vindex: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Строго: validated email только к тому VOID-лоту, чей item_link совпал."""
+    lk = link_key(str(item.get("item_link") or item.get("link") or ""))
+    if lk:
+        row = vindex.get(f"link:{lk}")
+        if row:
+            return row
+    return vindex.get(offer_fingerprint(item))
 
 
 async def save_all_offers_from_import(
@@ -217,17 +231,11 @@ async def save_all_offers_from_import(
     for it in items:
         if not isinstance(it, dict):
             continue
-        fp = offer_fingerprint(it)
-        vrow = vindex.get(fp)
-        if not vrow:
-            lk = link_key(str(it.get("item_link") or it.get("link") or ""))
-            if lk:
-                vrow = vindex.get(f"link:{lk}")
-
+        vrow = match_validated_row_for_item(it, vindex)
         fields = fields_from_item(it)
         picked = emails_from_validated_row(vrow, norm_email)
 
-        # 100% полей из парсера — для генерации ссылок и матча по всем данным.
+        # 100% полей VOID — для генерации ссылок; ключ лота = item_link.
         payload = json.loads(json.dumps(it, ensure_ascii=False, default=str))
         if isinstance(payload, dict):
             payload.setdefault(
@@ -239,6 +247,12 @@ async def save_all_offers_from_import(
                     or ""
                 ).strip(),
             )
+            void_link = str(it.get("item_link") or it.get("link") or "").strip()
+            if void_link:
+                payload["item_link"] = void_link
+            void_title = _title_from_item_dict(it)
+            if void_title:
+                payload["item_title"] = void_title
         else:
             payload = dict(it)
         if picked:

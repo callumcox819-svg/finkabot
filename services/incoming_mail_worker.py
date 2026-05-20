@@ -880,7 +880,8 @@ async def mail_card_offer_meta(
     body_text: str = "",
 ) -> tuple[int | None, str | None, str | None, str | None, str | None]:
     """Return offer_id, service_label, product_title, photo_url, offer_price."""
-    from services.offer_storage import offer_effective_price, offer_effective_photo, offer_effective_title
+    from services.offer_matching import offer_display_title
+    from services.offer_storage import offer_effective_link, offer_effective_price, offer_effective_photo
 
     offer_id = resolved_offer_id
     service_label = product_title = photo_url = offer_price = None
@@ -898,15 +899,19 @@ async def mail_card_offer_meta(
         )
         if off:
             offer_id = int(off.id)
-            t = offer_effective_title(off)
-            product_title = t or None
-            service_label = _service_label_from_link((off.link or "").strip())
+            product_title = offer_display_title(subject, off) or None
+            service_label = _service_label_from_link(offer_effective_link(off))
             ph = offer_effective_photo(off)
             photo_url = ph or None
             p = offer_effective_price(off, default="")
             offer_price = p or None
     except Exception:
         logger.exception("mail_card_offer_meta failed")
+
+    if not (product_title or "").strip():
+        from services.offer_matching import offer_display_title
+
+        product_title = offer_display_title(subject, None) or None
     return offer_id, service_label, product_title, photo_url, offer_price
 
 

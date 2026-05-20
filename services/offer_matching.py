@@ -50,8 +50,26 @@ def product_title_from_subject(subject: str) -> str:
     return subj
 
 
+def offer_display_title(subject: str, offer: Offer | None) -> str:
+    """Товар в карточке: тема письма, если оффер из БД не совпадает с Re:."""
+    from services.offer_storage import offer_effective_title
+
+    subj_t = product_title_from_subject(subject)
+    if not offer:
+        return subj_t or (subject or "").strip()
+    ot = (offer_effective_title(offer) or "").strip()
+    if subject_is_informative(subject):
+        sm = subject_match_score(subject, offer)
+        if sm >= _SUBJECT_EMAIL_AGREE_MIN_SCORE:
+            return ot or subj_t
+        return subj_t or ot
+    return ot or subj_t
+
+
 # Минимум совпадения темы с лотом из conversation_links (старый диалог)
 _CONV_AD_URL_MIN_SUBJECT_SCORE = 40.0
+# Тема Re: и email продавца — лот только при явном совпадении названия
+_SUBJECT_EMAIL_AGREE_MIN_SCORE = 40.0
 
 
 def _price_token(price: str) -> str:
@@ -289,11 +307,29 @@ async def resolve_offer_for_incoming(
     if not candidates:
         return None, None
 
+    subj_strong = subject_is_informative(subject)
+
+    # Re: … — email продавца не должен тянуть чужой лот (Ikea vs Baby milo).
+    if subj_strong and email_pairs:
+        from services.offer_storage import offer_effective_link
+
+        best_sm = -1.0
+        best_off: Offer | None = None
+        best_oe: OfferEmail | None = None
+        for oe, off in email_pairs:
+            if not offer_effective_link(off):
+                continue
+            sm = subject_match_score(subject, off)
+            if sm > best_sm:
+                best_sm = sm
+                best_off = off
+                best_oe = oe
+        if best_off and best_sm >= _SUBJECT_EMAIL_AGREE_MIN_SCORE:
+            return int(best_off.id), int(best_oe.id) if best_oe else None
+
     best_offer_id: int | None = None
     best_email_id: int | None = None
     best_score = -1.0
-
-    subj_strong = subject_is_informative(subject)
 
     for off, oe, email_hit in candidates.values():
         sc = score_offer(
@@ -306,8 +342,8 @@ async def resolve_offer_for_incoming(
         )
         if subj_strong and email_hit:
             sm = subject_match_score(subject, off)
-            if sm < 28.0:
-                sc -= 95.0
+            if sm < _SUBJECT_EMAIL_AGREE_MIN_SCORE:
+                sc -= 200.0
             elif sm >= 70.0:
                 sc += 40.0
         if sc > best_score:
@@ -315,8 +351,7 @@ async def resolve_offer_for_incoming(
             best_offer_id = int(off.id)
             best_email_id = int(oe.id) if oe else None
 
-    # Порог: email — всегда ок; без email — нужен сильный матч по полям
-    min_score = 45.0 if not email_pairs else 35.0
+    min_score = 55.0 if subj_strong else (45.0 if not email_pairs else 35.0)
     if best_offer_id is not None and best_score >= min_score:
         return best_offer_id, best_email_id
     return None, None
@@ -570,30 +605,6 @@ async def resolve_listing_for_incoming_mail(
         return off, link
 
     if subject_is_informative(subj):
-        seller_offers = await list_offers_for_seller_email(
-            session, user_id=int(user_id), from_email=fe
-        )
-        multi = len(seller_offers) > 1
-        off = _pick_best_linked_by_subject(
-            seller_offers,
-            subject=subj,
-            min_score=_AQUA_SUBJECT_MIN_SCORE,
-            min_gap=14.0 if multi else 0.0,
-        )
-        if off:
-            return _ret(off)
-
-        off = _pick_best_offer_by_subject_scores(
-            seller_offers,
-            subject=subj,
-            from_name=from_name,
-            body_text=body_text,
-            min_score=44.0 if multi else 32.0,
-        )
-        pair = _aqua_offer_pair(subj, off, min_score=_AQUA_SUBJECT_MIN_SCORE)
-        if pair:
-            return pair
-
         recent = (
             await session.execute(
                 sa_select(Offer)
@@ -622,6 +633,30 @@ async def resolve_listing_for_incoming_mail(
         if pair:
             return pair
 
+        seller_offers = await list_offers_for_seller_email(
+            session, user_id=int(user_id), from_email=fe
+        )
+        multi = len(seller_offers) > 1
+        off = _pick_best_linked_by_subject(
+            seller_offers,
+            subject=subj,
+            min_score=_SUBJECT_EMAIL_AGREE_MIN_SCORE,
+            min_gap=14.0 if multi else 8.0,
+        )
+        if off:
+            return _ret(off)
+
+        off = _pick_best_offer_by_subject_scores(
+            seller_offers,
+            subject=subj,
+            from_name=from_name,
+            body_text=body_text,
+            min_score=50.0 if multi else _SUBJECT_EMAIL_AGREE_MIN_SCORE,
+        )
+        pair = _aqua_offer_pair(subj, off, min_score=_SUBJECT_EMAIL_AGREE_MIN_SCORE)
+        if pair:
+            return pair
+
     murl = (mail_ad_url or "").strip()
     if murl:
         off = await find_offer_by_link(session, user_id=int(user_id), ad_url=murl)
@@ -637,17 +672,15 @@ async def resolve_listing_for_incoming_mail(
 
     if resolved_offer_id:
         off = await _load_offer(session, user_id=int(user_id), offer_id=int(resolved_offer_id))
-        pair = _aqua_offer_pair(subj, off, min_score=25.0 if subject_is_informative(subj) else None)
+        min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subject_is_informative(subj) else None
+        pair = _aqua_offer_pair(subj, off, min_score=min_sc)
         if pair:
             return pair
 
     if pinned_offer_id:
         off = await _load_offer(session, user_id=int(user_id), offer_id=int(pinned_offer_id))
-        pair = _aqua_offer_pair(
-            subj,
-            off,
-            min_score=25.0 if subject_is_informative(subj) else None,
-        )
+        min_sc = _SUBJECT_EMAIL_AGREE_MIN_SCORE if subject_is_informative(subj) else None
+        pair = _aqua_offer_pair(subj, off, min_score=min_sc)
         if pair:
             return pair
 
