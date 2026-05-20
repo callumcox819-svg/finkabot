@@ -34,11 +34,8 @@ def global_subject_template() -> str:
 
 
 async def resolve_mailing_subject_template(session, user) -> str:
-    """Шаблон темы для /send: сначала ⚙️ Темы, иначе GLOBAL_SUBJECT_TEMPLATE (Railway)."""
-    from services.user_settings import get_user_setting
-
-    custom = (await get_user_setting(session, user, SUBJECT_TEMPLATE_SETTING) or "").strip()
-    return custom or global_subject_template()
+    """Шаблон темы для /send и тест-маил — один на всех (GLOBAL_SUBJECT_TEMPLATE / Railway)."""
+    return global_subject_template()
 
 
 def render_subject_with_offer(subject_template: str, offer_title: str) -> str:
