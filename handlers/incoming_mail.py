@@ -174,14 +174,9 @@ async def _notify_reply_sent(bot, chat_id: int, ctx: ReplyNotifyCtx) -> None:
     to_addr = _e(ctx.to_email or "—")
     incoming = _e(ctx.incoming_from or ctx.to_email or "—")
     anchor = int(ctx.anchor_message_id)
-    label = (ctx.inbox_label or "").strip()
-    head_inbox = ""
-    if label:
-        head_inbox = f'⚡️ Получено сообщение на "<b>{_e(label)}</b>" <code>{from_acc}</code>\n'
 
     if ctx.is_html:
         main = (
-            f"{head_inbox}"
             f"⚡️ Ответ: <b>[HTML]</b> успешно отправлен на <code>{to_addr}</code> "
             f"с аккаунта <code>{from_acc}</code> ⚡️\n"
             f"От кого было входящее: <code>{incoming}</code>"
@@ -189,7 +184,6 @@ async def _notify_reply_sent(bot, chat_id: int, ctx: ReplyNotifyCtx) -> None:
     else:
         preview = _preview_reply_body(ctx.body_text, is_html=False)
         main = (
-            f"{head_inbox}"
             f"⚡️ <code>{from_acc}</code> — <b>{_e(preview)}</b> — <code>{to_addr}</code>\n\n"
             f"успешно отправлен на <code>{to_addr}</code> с аккаунта <code>{from_acc}</code> ⚡️\n"
             f"От кого было входящее: <code>{incoming}</code>"
@@ -787,12 +781,10 @@ async def _send_generated_link_card_to_chat(
 
     from_acc = _e((account_email or "").strip() or "—")
     to_addr = _e((contact_email or "").strip() or "—")
-    label = (inbox_label or "").strip()
     head = ""
-    if label and reply_to:
-        head = f'⚡️ Получено сообщение на "<b>{_e(label)}</b>" <code>{from_acc}</code>\n'
     if reply_to:
-        head += (
+        # Не дублируем «Получено сообщение на …» — это уже в карточке входящего (reply_to).
+        head = (
             f"⚡️ <code>{from_acc}</code> — <b>ссылка создана</b> — <code>{to_addr}</code>\n"
             f"От кого было входящее: <code>{to_addr}</code>\n\n"
         )
