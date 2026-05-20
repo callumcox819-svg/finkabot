@@ -1,58 +1,205 @@
-import asyncio
-import random
-import pathlib
-import re
-from aiogram import Router, F
-from aiogram.filters import Command
-from aiogram.types import Message
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import StatesGroup, State
+"""Тестовая рассылка: тема как в /send, до 4 сохранённых получателей."""
 
-from config import config
+from __future__ import annotations
+
+import asyncio
+import json
+import pathlib
+import random
+import re
+from html import escape
+
+from aiogram import F, Router
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+
 from database import async_session
+from handlers.first_sms import pick_random_first_sms
+from handlers.templates import pick_random_smart_preset
 from models import EmailAccount, Offer, OfferEmail, User
-from sqlalchemy import select, func
-from services.smtp_proxy_send import send_email_via_account_with_proxy
+from services.aqua_keys import AQUA_PROFILE_ADDRESS_KEY, AQUA_PROFILE_NAME_KEY
+from services.offer_storage import offer_effective_title
+from services.placeholders import apply_placeholders
 from services.smtp_block_control import is_smtp_account_block_error, mark_account_smtp_blocked
 from services.smtp_delivery_verify import verify_message_in_sent
-from handlers.templates import pick_random_smart_preset
-from handlers.first_sms import pick_random_first_sms
-from utils.bg_jobs import is_running as bg_is_running, start as bg_start
+from services.smtp_proxy_send import send_email_via_account_with_proxy
+from services.subject_offer import subject_for_offer
+from services.user_settings import get_user_setting, set_user_setting
+from sqlalchemy import func, select
+from utils.bg_jobs import is_running as bg_is_running
+from utils.bg_jobs import start as bg_start
 
 router = Router()
 
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+TEST_MAIL_RECIPIENTS_KEY = "test_mail_recipients"
+MAX_TEST_RECIPIENTS = 4
+TEST_SEND_DELAY_SEC = 2.0
+
+class TestMailStates(StatesGroup):
+    waiting_recipients = State()
 
 
 def _canon_email(addr: str) -> str:
     return (addr or "").strip().lower()
 
 
-class TestMailStates(StatesGroup):
-    waiting_email = State()
+def _parse_emails(text: str, *, max_n: int = MAX_TEST_RECIPIENTS) -> list[str]:
+    out: list[str] = []
+    for chunk in re.split(r"[\s,;]+", (text or "").strip()):
+        e = _canon_email(chunk)
+        if e and EMAIL_RE.match(e) and e not in out:
+            out.append(e)
+        if len(out) >= max_n:
+            break
+    return out
 
 
-TEST_SUBJECTS = [
-    "Test message – Order update",
-    "Test message – Please confirm",
-    "Test message – Action required",
-    "Test message – Status notification",
-    "Test message – Delivery check",
-]
+async def _load_saved_recipients(session, user: User) -> list[str]:
+    raw = (await get_user_setting(session, user, TEST_MAIL_RECIPIENTS_KEY) or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [
+                e
+                for x in data
+                if (e := _canon_email(str(x))) and EMAIL_RE.match(e)
+            ][:MAX_TEST_RECIPIENTS]
+    except json.JSONDecodeError:
+        pass
+    return _parse_emails(raw)
 
 
-@router.message(F.text == "🧪 Тест маил")
-async def test_mail_start(message: Message, state: FSMContext):
+async def _save_recipients(session, user: User, emails: list[str]) -> None:
+    clean = _parse_emails(" ".join(emails), max_n=MAX_TEST_RECIPIENTS)
+    await set_user_setting(
+        session,
+        user,
+        TEST_MAIL_RECIPIENTS_KEY,
+        json.dumps(clean, ensure_ascii=False),
+    )
+
+
+def _menu_kb(*, has_recipients: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_recipients:
+        rows.append(
+            [InlineKeyboardButton(text="▶️ Отправить на сохранённые", callback_data="test_mail:send")]
+        )
+    rows.append(
+        [InlineKeyboardButton(text="✏️ Указать получателей (до 4)", callback_data="test_mail:edit")]
+    )
+    if has_recipients:
+        rows.append(
+            [InlineKeyboardButton(text="🗑 Очистить список", callback_data="test_mail:clear")]
+        )
+    rows.append([InlineKeyboardButton(text="❌ Закрыть", callback_data="test_mail:close")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _menu_text(session, user: User) -> str:
+    saved = await _load_saved_recipients(session, user)
+    lines = [
+        "<b>🧪 Тест маил</b>",
+        "",
+        "Тема и текст — как в рассылке: <b>случайный оффер</b> из БД, тема = название товара.",
+        f"Получателей в списке: <b>{len(saved)}/{MAX_TEST_RECIPIENTS}</b>",
+    ]
+    if saved:
+        lines.append("")
+        for i, em in enumerate(saved, 1):
+            lines.append(f"{i}. <code>{escape(em)}</code>")
+    else:
+        lines.append("")
+        lines.append(
+            "<i>Сначала «Указать получателей» — через запятую или с новой строки, "
+            "например:</i>\n<code>you@gmail.com, friend@hotmail.com</code>"
+        )
+    lines.append("")
+    lines.append("<i>Проверяйте Inbox и Спам у получателя.</i>")
+    return "\n".join(lines)
+
+
+async def _show_menu(message: Message, *, edit: bool = False) -> None:
     from services.bot_roles import user_is_admin
 
     if not await user_is_admin(message.from_user.id):
         return
-    await state.set_state(TestMailStates.waiting_email)
-    await message.answer("🧪 Введите email для теста (или '-' чтобы отменить):")
+    async with async_session() as session:
+        user = (
+            await session.execute(select(User).where(User.telegram_id == int(message.from_user.id)))
+        ).scalars().first()
+        if not user:
+            return await message.answer("❌ Сначала /start")
+        text = await _menu_text(session, user)
+        saved = await _load_saved_recipients(session, user)
+        kb = _menu_kb(has_recipients=bool(saved))
+    if edit and getattr(message, "edit_text", None):
+        try:
+            return await message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+        except Exception:
+            pass
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
-@router.message(TestMailStates.waiting_email)
-async def test_mail_send(message: Message, state: FSMContext):
+@router.message(F.text == "🧪 Тест маил")
+async def test_mail_start(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await _show_menu(message)
+
+
+@router.callback_query(F.data == "test_mail:close")
+async def test_mail_close(call: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await call.answer()
+    try:
+        await call.message.delete()
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "test_mail:clear")
+async def test_mail_clear(call: CallbackQuery, state: FSMContext) -> None:
+    from services.bot_roles import user_is_admin
+
+    if not await user_is_admin(call.from_user.id):
+        return await call.answer("Нет доступа", show_alert=True)
+    await state.clear()
+    async with async_session() as session:
+        user = (
+            await session.execute(select(User).where(User.telegram_id == int(call.from_user.id)))
+        ).scalars().first()
+        if user:
+            await _save_recipients(session, user, [])
+            await session.commit()
+    await call.answer("Список очищен")
+    await _show_menu(call.message, edit=True)
+
+
+@router.callback_query(F.data == "test_mail:edit")
+async def test_mail_edit_cb(call: CallbackQuery, state: FSMContext) -> None:
+    from services.bot_roles import user_is_admin
+
+    if not await user_is_admin(call.from_user.id):
+        return await call.answer("Нет доступа", show_alert=True)
+    await state.set_state(TestMailStates.waiting_recipients)
+    await call.answer()
+    await call.message.answer(
+        f"✏️ Введите до <b>{MAX_TEST_RECIPIENTS}</b> email получателей.\n"
+        "Через запятую, пробел или с новой строки.\n\n"
+        "Пример:\n"
+        "<code>test1@gmail.com, test2@hotmail.com</code>\n\n"
+        "Отмена: <code>-</code>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(TestMailStates.waiting_recipients)
+async def test_mail_save_recipients(message: Message, state: FSMContext) -> None:
     from services.bot_roles import user_is_admin
 
     if not await user_is_admin(message.from_user.id):
@@ -60,178 +207,259 @@ async def test_mail_send(message: Message, state: FSMContext):
         return
 
     text = (message.text or "").strip()
-    if text == "-" or text.lower() == "cancel":
+    if text in ("-", "cancel") or text.lower() == "отмена":
         await state.clear()
         await message.answer("❌ Отменено.")
+        await _show_menu(message)
         return
 
-    if not EMAIL_RE.match(text):
-        await message.answer("❌ Это не похоже на email. Попробуйте ещё раз или отправьте '-' чтобы отменить.")
-        return
+    emails = _parse_emails(text)
+    if not emails:
+        return await message.answer(
+            "❌ Не найдено ни одного email. Попробуйте снова или отправьте <code>-</code>.",
+            parse_mode="HTML",
+        )
 
-    to_email = text.lower()
-    tg_id = int(message.from_user.id)
-
-    # 1) берём юзера+аккаунт из БД
     async with async_session() as session:
-        user = (await session.execute(
-            select(User).where(User.telegram_id == tg_id)
-        )).scalars().first()
+        user = (
+            await session.execute(select(User).where(User.telegram_id == int(message.from_user.id)))
+        ).scalars().first()
         if not user:
-            await message.answer("❌ Пользователь не найден в БД. Напишите /start и попробуйте ещё раз.")
             await state.clear()
-            return
-
-        user_id = int(user.id)
-
-        accs = (await session.execute(
-            select(EmailAccount).where(EmailAccount.user_id == user_id)
-        )).scalars().all()
-        accs = [a for a in accs if getattr(a, "status", "") == "active"]
-        if not accs:
-            await message.answer("❌ Нет активных email-аккаунтов для отправки. Добавьте аккаунт в 📮 Аккаунты.")
-            await state.clear()
-            return
-        eligible = [a for a in accs if _canon_email(a.email) != to_email]
-        if not eligible:
-            await message.answer(
-                "❌ Нельзя тестировать на тот же ящик, что и единственный аккаунт отправителя.\n"
-                "Добавьте второй аккаунт или укажите другой email получателя."
-            )
-            await state.clear()
-            return
-        account = random.choice(eligible)
-
-        title_row = (await session.execute(
-            select(Offer.title).where(Offer.title.is_not(None)).order_by(func.random()).limit(1)
-        )).first()
-        offer_title = title_row[0] if title_row and title_row[0] else ""
-
-    subject = random.choice(TEST_SUBJECTS)
-    body = await pick_random_smart_preset(message.from_user.id, offer_title)
-    if not (body or "").strip():
-        body = await pick_random_first_sms(message.from_user.id, offer_title)
-    if not (body or "").strip():
-        await message.answer("❌ Пустое тело письма — нет шаблона для теста.")
-        await state.clear()
-        return
+            return await message.answer("❌ Сначала /start")
+        await _save_recipients(session, user, emails)
+        await session.commit()
 
     await state.clear()
+    await message.answer(
+        f"✅ Сохранено <b>{len(emails)}</b> адрес(ов).\n" + ", ".join(f"<code>{escape(e)}</code>" for e in emails),
+        parse_mode="HTML",
+    )
+    await _show_menu(message)
+
+
+@router.callback_query(F.data == "test_mail:send")
+async def test_mail_send_cb(call: CallbackQuery, state: FSMContext) -> None:
+    from services.bot_roles import user_is_admin
+
+    if not await user_is_admin(call.from_user.id):
+        return await call.answer("Нет доступа", show_alert=True)
+    await state.clear()
+    await call.answer()
+    await _run_mass_test(call.message, int(call.from_user.id))
+
+
+async def _pick_random_offer(session, user_id: int) -> Offer | None:
+    return (
+        await session.execute(
+            select(Offer)
+            .where(Offer.user_id == int(user_id))
+            .where(Offer.title.is_not(None))
+            .where(Offer.title != "")
+            .order_by(func.random())
+            .limit(1)
+        )
+    ).scalars().first()
+
+
+async def _build_test_message(
+    session,
+    *,
+    tg_id: int,
+    user: User,
+    offer: Offer | None,
+) -> tuple[str, str, str]:
+    """subject, body, item_title"""
+    item_title = offer_effective_title(offer) if offer else ""
+    if not item_title:
+        row = (
+            await session.execute(
+                select(Offer.title)
+                .where(Offer.user_id == int(user.id))
+                .where(Offer.title.is_not(None))
+                .order_by(func.random())
+                .limit(1)
+            )
+        ).first()
+        item_title = (row[0] if row else "") or "OFFER"
+
+    price = (getattr(offer, "price", "") or "").strip() if offer else ""
+    link = (getattr(offer, "link", "") or "").strip() if offer else ""
+    image_url = (getattr(offer, "photo", "") or "").strip() if offer else ""
+
+    buyer_name = ((await get_user_setting(session, user, AQUA_PROFILE_NAME_KEY)) or "").strip()
+    address = ((await get_user_setting(session, user, AQUA_PROFILE_ADDRESS_KEY)) or "").strip()
+
+    ctx = {
+        "ITEM_TITLE": item_title,
+        "PRICE": price,
+        "BUYER_NAME": buyer_name,
+        "ADDRESS": address,
+        "IMAGE_URL": image_url,
+    }
+
+    base_text = await pick_random_smart_preset(tg_id, item_title)
+    if not (base_text or "").strip():
+        base_text = await pick_random_first_sms(tg_id, item_title)
+    if not (base_text or "").strip():
+        base_text = f"Hei! Onko tuote vielä myynnissä? {item_title}".strip()
+
+    body = apply_placeholders(base_text, link=link, ctx=ctx)
+    subject = subject_for_offer(item_title)
+    return subject, body, item_title
+
+
+async def _run_mass_test(message: Message, tg_id: int) -> None:
     if bg_is_running(tg_id, "test_mail"):
         return await message.answer("⏳ Тест уже отправляется…")
 
-    status = await message.answer(f"⏳ Отправляю тест на <code>{to_email}</code>…", parse_mode="HTML")
-    acc_email = account.email
+    async with async_session() as session:
+        user = (
+            await session.execute(select(User).where(User.telegram_id == tg_id))
+        ).scalars().first()
+        if not user:
+            return await message.answer("❌ Сначала /start")
+        recipients = await _load_saved_recipients(session, user)
+        if not recipients:
+            return await message.answer(
+                "❌ Список получателей пуст. «🧪 Тест маил» → «Указать получателей»."
+            )
+        user_id = int(user.id)
+        accs = [
+            a
+            for a in (
+                await session.execute(select(EmailAccount).where(EmailAccount.user_id == user_id))
+            ).scalars().all()
+            if getattr(a, "status", "") == "active"
+        ]
+        if not accs:
+            return await message.answer("❌ Нет активных аккаунтов в «📮 Аккаунты».")
+
+        sender_emails = {_canon_email(a.email) for a in accs}
+        targets = [r for r in recipients if r not in sender_emails]
+        if not targets:
+            return await message.answer(
+                "❌ Все получатели совпадают с вашими ящиками отправителя. Укажите внешние email."
+            )
+        eligible_acc_ids = [int(a.id) for a in accs]
+
+    status = await message.answer(
+        f"⏳ Тест на <b>{len(targets)}</b> адрес(ов)…",
+        parse_mode="HTML",
+    )
 
     async def _job() -> None:
+        ok_n = 0
+        fail_lines: list[str] = []
+        details: list[str] = []
+        acc_ids = list(eligible_acc_ids)
+
         try:
-            async with async_session() as session_proxy:
-                ok, err, msgid = await send_email_via_account_with_proxy(
-                    session_proxy,
-                    user_id,
-                    account,
-                    to_email,
-                    subject,
-                    body,
-                )
-            if ok:
-                imap_extra = (
-                    "\n\n<i>Gmail через SMTP часто не сразу кладёт копию в «Отправленные» — "
-                    "это не значит, что прокси не сработал. Смотрите у получателя: "
-                    "Входящие, Спам, «Вся почта».</i>"
-                )
-                try:
-                    await asyncio.sleep(3)
-                    verified, verify_msg = await verify_message_in_sent(
-                        account.email,
-                        account.password or "",
-                        subject=subject,
-                        to_email=to_email,
-                        message_id=msgid,
+            for i, to_email in enumerate(targets):
+                if i > 0:
+                    await asyncio.sleep(TEST_SEND_DELAY_SEC)
+
+                if not acc_ids:
+                    fail_lines.append("нет активных ящиков")
+                    break
+
+                async with async_session() as session:
+                    user = (
+                        await session.execute(select(User).where(User.id == user_id))
+                    ).scalars().first()
+                    if not user:
+                        fail_lines.append("пользователь не найден")
+                        break
+                    acc_row = await session.get(EmailAccount, random.choice(acc_ids))
+                    if not acc_row or getattr(acc_row, "status", "") != "active":
+                        fail_lines.append("ящик недоступен")
+                        break
+                    account = acc_row
+                    offer = await _pick_random_offer(session, user_id)
+                    subject, body, item_title = await _build_test_message(
+                        session, tg_id=tg_id, user=user, offer=offer
                     )
-                    if verified:
-                        imap_extra = f"\n\n<i>Копия в «Отправленных» отправителя: {verify_msg}</i>"
-                except Exception:
-                    pass
+                    ok, err, msgid = await send_email_via_account_with_proxy(
+                        session,
+                        user_id,
+                        account,
+                        to_email,
+                        subject,
+                        body,
+                    )
 
-                link_note = ""
-                async with async_session() as session2:
-                    raw_link = await pick_random_raw_link(session2)
-                    test_photo = ""
-                    test_price = ""
-                    photo_rows = (
-                        await session2.execute(
-                            select(Offer.photo, Offer.price)
-                            .where(Offer.user_id == user_id)
-                            .order_by(func.random())
-                            .limit(30)
-                        )
-                    ).all()
-                    for prow in photo_rows:
-                        p, pr = prow[0], prow[1]
-                        if (p or "").strip().startswith(("http://", "https://")):
-                            test_photo = (p or "").strip()
-                        if (pr or "").strip() and not test_price:
-                            test_price = (pr or "").strip()
-                        if test_photo:
-                            break
-                    if not test_price:
-                        test_price = "1"
-                    if raw_link:
-                        test_offer = Offer(
-                            user_id=user_id,
-                            title="TEST MAIL",
-                            link=raw_link,
-                            price=test_price,
-                            photo=test_photo or None,
-                            person_name="TEST",
-                        )
-                        session2.add(test_offer)
-                        await session2.flush()
-                        session2.add(OfferEmail(offer_id=test_offer.id, email=to_email))
-                        await session2.commit()
-                        link_note = (
-                            f"\n\n🔗 Для «Создать ссылку»: ответ с <code>{to_email}</code>\n"
-                            f"<code>{raw_link[:120]}</code>"
-                        )
-                    else:
-                        link_note = (
-                            "\n\n⚠️ <b>Ссылка для теста не записана в БД</b> — "
-                            "«Создать ссылку» на ответе не сработает.\n"
-                            "Добавьте tori.fi в офферы или <code>data/test_links.txt</code>."
-                        )
+                acc_email = account.email
+                subj_short = (subject or "")[:50]
+                if ok:
+                    ok_n += 1
+                    details.append(
+                        f"✅ <code>{escape(to_email)}</code>\n"
+                        f"   от <code>{escape(acc_email)}</code>\n"
+                        f"   тема: {escape(subj_short)}"
+                    )
+                    if i == 0:
+                        try:
+                            await asyncio.sleep(3)
+                            verified, _ = await verify_message_in_sent(
+                                account.email,
+                                account.password or "",
+                                subject=subject,
+                                to_email=to_email,
+                                message_id=msgid,
+                            )
+                            if verified:
+                                details.append("   <i>Копия в «Отправленных» отправителя: да</i>")
+                        except Exception:
+                            pass
+                    async with async_session() as session2:
+                        raw_link = await pick_random_raw_link(session2)
+                        if raw_link:
+                            test_offer = Offer(
+                                user_id=user_id,
+                                title=item_title[:200] or "TEST",
+                                link=raw_link,
+                                price=(getattr(offer, "price", None) or "1") if offer else "1",
+                                photo=getattr(offer, "photo", None) if offer else None,
+                                person_name="TEST",
+                            )
+                            session2.add(test_offer)
+                            await session2.flush()
+                            session2.add(OfferEmail(offer_id=test_offer.id, email=to_email))
+                            await session2.commit()
+                else:
+                    err_s = err or "unknown"
+                    fail_lines.append(f"<code>{escape(to_email)}</code>: {escape(err_s[:120])}")
+                    if is_smtp_account_block_error(err_s):
+                        async with async_session() as session_blk:
+                            await mark_account_smtp_blocked(
+                                session_blk,
+                                account,
+                                err_s,
+                                db_user_id=user_id,
+                                bot=message.bot,
+                                chat_id=int(message.chat.id),
+                            )
+                        acc_ids = [aid for aid in acc_ids if aid != int(account.id)]
 
-                await status.edit_text(
-                    "✅ <b>Отправка через прокси прошла</b> (SMTP принял письмо)\n\n"
-                    f"Кому: <code>{to_email}</code>\n"
-                    f"От: <code>{acc_email}</code>\n"
-                    f"Тема: {subject}"
-                    f"{imap_extra}"
-                    f"{link_note}",
-                    parse_mode="HTML",
-                )
-            else:
-                err_s = err or "unknown"
-                if is_smtp_account_block_error(err_s):
-                    async with async_session() as session_blk:
-                        await mark_account_smtp_blocked(
-                            session_blk,
-                            account,
-                            err_s,
-                            db_user_id=user_id,
-                            bot=message.bot,
-                            chat_id=int(message.chat.id),
-                        )
-                await status.edit_text(f"❌ Ошибка отправки (От: {acc_email}): {err_s}")
+            summary = (
+                f"<b>🧪 Тест завершён</b>\n\n"
+                f"Успешно: <b>{ok_n}/{len(targets)}</b>\n\n"
+                + "\n".join(details[:8])
+            )
+            if fail_lines:
+                summary += "\n\n<b>Ошибки:</b>\n" + "\n".join(fail_lines[:6])
+            summary += (
+                "\n\n<i>Смотрите Inbox и Спам. Тема без «Test message» — как в рассылке.</i>"
+            )
+            await status.edit_text(summary, parse_mode="HTML")
         except Exception as e:
-            await status.edit_text(f"❌ Ошибка отправки (От: {acc_email}): {e}")
+            await status.edit_text(f"❌ Ошибка теста: {escape(str(e))}", parse_mode="HTML")
 
     if not bg_start(tg_id, "test_mail", _job()):
         await message.answer("⏳ Тест уже отправляется…")
 
 
 def _is_valid_ad_link(url: str) -> bool:
-    """Ссылки для тест-оффера (AQUA: tori.fi / posti.fi)."""
     if not url:
         return False
     u = url.lower().strip()
@@ -249,9 +477,11 @@ def _is_valid_ad_link(url: str) -> bool:
 
 
 async def pick_random_raw_link(session):
-    row = (await session.execute(
-        select(Offer.link).where(Offer.link.is_not(None)).order_by(func.random()).limit(50)
-    )).all()
+    row = (
+        await session.execute(
+            select(Offer.link).where(Offer.link.is_not(None)).order_by(func.random()).limit(50)
+        )
+    ).all()
     for (candidate,) in row:
         if _is_valid_ad_link(candidate):
             return candidate
@@ -259,18 +489,24 @@ async def pick_random_raw_link(session):
     p = pathlib.Path("data/test_links.txt")
     if not p.exists():
         return None
-    links = [x.strip() for x in p.read_text(encoding="utf-8").splitlines() if x.strip() and _is_valid_ad_link(x.strip())]
+    links = [
+        x.strip()
+        for x in p.read_text(encoding="utf-8").splitlines()
+        if x.strip() and _is_valid_ad_link(x.strip())
+    ]
     return random.choice(links) if links else None
 
 
 @router.message(Command("preview_imap"))
 async def preview_imap_card(message: Message) -> None:
     """Демо-карточка входящего письма (тот же UI, что у IMAP)."""
-    from services.incoming_mail_worker import render_mail_text_chunks, build_kb
+    from services.incoming_mail_worker import build_kb, render_mail_text_chunks
 
     async with async_session() as session:
         user = (
-            await session.execute(select(User).where(User.telegram_id == int(message.from_user.id)).limit(1))
+            await session.execute(
+                select(User).where(User.telegram_id == int(message.from_user.id)).limit(1)
+            )
         ).scalars().first()
         if not user:
             return await message.answer("Сначала /start")
@@ -306,7 +542,7 @@ async def preview_imap_card(message: Message) -> None:
     )
     kb = build_kb(0, "preview", mail_id=None)
     await message.answer(
-        "ℹ️ <b>Демо-карточка</b> (не реальное IMAP-письмо). Разворот текста — стрелкой в блоке «Текст». Кнопки «Перевести» — на живых письмах с ID в БД.",
+        "ℹ️ <b>Демо-карточка</b> (не реальное IMAP-письмо).",
         parse_mode="HTML",
     )
     await message.answer(chunks[0], reply_markup=kb, parse_mode="HTML", disable_web_page_preview=True)

@@ -422,12 +422,26 @@ async def _notify_sending_finished(*, bot: Bot, chat_id: int, tg_user_id: int) -
     else:
         title = "⚠️ <b>Рассылка прервана</b>"
 
+    inbox_hint = ""
+    try:
+        from services.incoming_mail_stats import build_incoming_breakdown, format_incoming_breakdown_html
+
+        async with db_session() as session:
+            user = await get_or_create_user(session, tg_user_id)
+            br = await build_incoming_breakdown(session, int(user.id))
+        if int(br.get("total") or 0) > 0:
+            inbox_hint = format_incoming_breakdown_html(br)
+    except Exception:
+        pass
+
     text = (
         f"{title}\n\n"
         f"Отправлено (SMTP): <b>{sent}</b>\n"
         f"Ошибок отправки: <b>{failed}</b>\n"
-        f"Email в очереди: <b>{pending}</b>\n\n"
-        f"<i>Если ответов мало — проверьте прокси (SMTP+STARTTLS OK) и задержку 2–5 с.</i>"
+        f"Email в очереди: <b>{pending}</b>"
+        f"{inbox_hint}\n\n"
+        f"<i>Мало ответов? /imap_diag (отбои vs живые), приоритет доменов gmail/hotmail, "
+        f"VALIDEMAIL_STRICT=0 если очередь пустая. MAIL_VERIFY_SENT=1 — только реально ушедшие.</i>"
     )
     if failed > 0 and (state.last_error or "").strip() not in ("", "-"):
         who = f"\nПоследний адрес: <code>{state.last_failed_to}</code>" if state.last_failed_to else ""
