@@ -36,8 +36,11 @@ class Config:
         VALIDEMAIL_API_KEYS = [k for k in (VALIDEMAIL_API_KEY_1, VALIDEMAIL_API_KEY_2) if k]
     VALIDEMAIL_CONCURRENCY = int(os.getenv("VALIDEMAIL_CONCURRENCY", "12"))
 
-    # Тема рассылки: OFFER → название товара; по умолчанию фин. «Kysymys:» + лот
-    GLOBAL_SUBJECT_TEMPLATE = os.getenv("GLOBAL_SUBJECT_TEMPLATE", "Kysymys: OFFER").strip() or "Kysymys: OFFER"
+    # Тема рассылки: OFFER → название товара (глобально для всех)
+    GLOBAL_SUBJECT_TEMPLATE = (
+        os.getenv("GLOBAL_SUBJECT_TEMPLATE", "Re: Tuotteen ostaminen OFFER").strip()
+        or "Re: Tuotteen ostaminen OFFER"
+    )
 
     # AQUA / GOO NETWORK (Финляндия) — команда AQUA на legacy-хосте api-old.goo.network
     GOO_API_BASE = os.getenv("GOO_API_BASE", "https://api-old.goo.network").strip().rstrip("/")
