@@ -65,6 +65,8 @@ def _smtp_local_hostname() -> str | None:
     )
     if custom:
         return custom
+    if _running_on_railway():
+        return "localhost"
     return None
 
 
