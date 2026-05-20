@@ -845,8 +845,9 @@ async def resolve_offer_for_mail_card(
     from_name: str = "",
     body_text: str = "",
 ) -> Offer | None:
-    """Карточка/AQUA: тема письма → ссылка этого письма → conv ad_url → resolved_offer_id → скоринг."""
+    """Карточка/AQUA: тема → ad_url письма → resolved_offer_id → conv (если тема совпадает) → скоринг."""
     from services.offer_matching import (
+        _CONV_AD_URL_MIN_SUBJECT_SCORE,
         resolve_best_offer_by_subject,
         resolve_best_offer_by_subject_global,
         subject_is_informative,
@@ -890,13 +891,6 @@ async def resolve_offer_for_mail_card(
         if off:
             return off
 
-    if conv and (conv.ad_url or "").strip():
-        off = await find_offer_by_link(
-            session, user_id=int(user_id), ad_url=(conv.ad_url or "").strip()
-        )
-        if off:
-            return off
-
     if resolved_offer_id:
         off = (
             await session.execute(
@@ -920,6 +914,17 @@ async def resolve_offer_for_mail_card(
                     if better:
                         return better
             return off
+
+    # Старый ad_url диалога — только если тема письма совпадает с тем лотом
+    if conv and (conv.ad_url or "").strip():
+        off_conv = await find_offer_by_link(
+            session, user_id=int(user_id), ad_url=(conv.ad_url or "").strip()
+        )
+        if off_conv:
+            if not subject_is_informative(subject):
+                return off_conv
+            if subject_match_score(subject, off_conv) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+                return off_conv
 
     oid, _ = await _resolve_offer_for_incoming(
         session,
@@ -1009,6 +1014,11 @@ async def build_mail_card_from_mail(
         user_id=int(mail.user_id),
         from_email=str(getattr(mail, "from_email", "") or ""),
         resolved_offer_id=getattr(mail, "resolved_offer_id", None),
+        ad_url=(getattr(mail, "ad_url", "") or "").strip() or None,
+        inbox_email=str(getattr(mail, "account_email", "") or ""),
+        subject=str(getattr(mail, "subject", "") or ""),
+        from_name=str(getattr(mail, "from_name", "") or ""),
+        body_text=str(getattr(mail, "body", "") or ""),
     )
 
     generated_link = (getattr(mail, "generated_link", None) or "").strip()
@@ -1356,6 +1366,29 @@ async def _process_mails_for_account_impl(
                 except Exception:
                     logger.exception("Failed to load Offer.link for resolved_offer_id=%s", resolved_offer_id)
 
+            if (not ad_url):
+                from services.offer_matching import (
+                    resolve_best_offer_by_subject_global,
+                    subject_is_informative,
+                )
+
+            if (not ad_url) and subject_is_informative(subject or ""):
+                try:
+                    async with _imap_db_session() as session:
+
+                        off_sub = await resolve_best_offer_by_subject_global(
+                            session,
+                            user_id=int(user_id),
+                            subject=subject or "",
+                            from_name=(from_name or "").strip(),
+                            body_text=body_clean or "",
+                        )
+                        if off_sub and (off_sub.link or "").strip():
+                            ad_url = (off_sub.link or "").strip()
+                            resolved_offer_id = int(off_sub.id)
+                except Exception:
+                    logger.exception("Failed subject-global Offer.link for incoming mail")
+
             if ad_url:
                 FULL_META[(acc_id, uid_key)]["ad_url"] = ad_url
 
@@ -1378,7 +1411,12 @@ async def _process_mails_for_account_impl(
             )
             if gen_link:
                 FULL_META[(acc_id, uid_key)]["generated_link"] = gen_link
-            if conv and conv.ad_url and not FULL_META[(acc_id, uid_key)].get("ad_url"):
+            if (
+                conv
+                and conv.ad_url
+                and not FULL_META[(acc_id, uid_key)].get("ad_url")
+                and not resolved_offer_id
+            ):
                 FULL_META[(acc_id, uid_key)]["ad_url"] = (conv.ad_url or "").strip()
 
             link_id = link_id_from_generated_url(gen_link)

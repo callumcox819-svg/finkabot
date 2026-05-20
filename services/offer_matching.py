@@ -29,6 +29,18 @@ def _norm_subject(subject: str) -> str:
     return re.sub(r"^(re|aw|fw|fwd)\s*:\s*", "", s, flags=re.I).strip()
 
 
+def product_title_from_subject(subject: str) -> str:
+    """Название из темы (Re: Tuote …) — если оффер в БД привязан к другому лоту."""
+    subj = _norm_subject(subject)
+    if len(subj) > 140:
+        subj = subj[:137] + "…"
+    return subj
+
+
+# Минимум совпадения темы с лотом из conversation_links (старый диалог)
+_CONV_AD_URL_MIN_SUBJECT_SCORE = 40.0
+
+
 def _price_token(price: str) -> str:
     m = _PRICE_NUM_RE.search((price or "").replace(" ", ""))
     if not m:
@@ -348,6 +360,54 @@ def subject_match_score(subject: str, off: Offer) -> float:
             score -= 50.0
 
     return score
+
+
+async def finalize_aqua_listing_context(
+    session,
+    *,
+    user_id: int,
+    listing_url: str,
+    offer: Offer | None,
+    subject: str = "",
+) -> tuple[Offer | None, str, str, str | None, str | None]:
+    """url + title + price + photo из одного Offer; иначе тема письма."""
+    from services.offer_storage import (
+        find_offer_by_link,
+        offer_effective_photo,
+        offer_effective_price,
+        offer_effective_title,
+    )
+
+    url = (listing_url or "").strip()
+    off_url = (
+        await find_offer_by_link(session, user_id=int(user_id), ad_url=url) if url else None
+    )
+    if off_url:
+        offer = off_url
+
+    subj_t = product_title_from_subject(subject)
+    title = ""
+    price = image = None
+
+    if offer:
+        ot = (offer_effective_title(offer) or "").strip()
+        if subject_is_informative(subject):
+            sm = subject_match_score(subject, offer)
+            if sm < _CONV_AD_URL_MIN_SUBJECT_SCORE and subj_t:
+                title = subj_t
+            else:
+                title = ot or subj_t
+        else:
+            title = ot or subj_t
+        price = offer_effective_price(offer) or None
+        image = offer_effective_photo(offer) or None
+    else:
+        title = subj_t
+
+    if not (title or "").strip():
+        title = subj_t or (subject or "").strip() or "OFFER"
+
+    return offer, url, title.strip(), price, image
 
 
 async def list_offers_for_seller_email(

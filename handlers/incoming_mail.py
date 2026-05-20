@@ -47,7 +47,7 @@ from services.incoming_mail_worker import (
     build_mail_card_from_mail,
     resolve_offer_for_mail_card,
 )
-from services.offer_matching import resolve_offer_for_incoming
+from services.offer_matching import finalize_aqua_listing_context, resolve_offer_for_incoming
 from services.offer_storage import offer_effective_photo, offer_effective_price, offer_effective_title
 from services.smtp_proxy_send import send_email_via_account_with_proxy
 from services.translate import translate_to_ru, _strip_html
@@ -1428,8 +1428,26 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
                 contact_email=contact_email,
             )
             if conv and conv.ad_url and str(conv.ad_url).strip():
-                url = str(conv.ad_url).strip()
-                break
+                conv_url = str(conv.ad_url).strip()
+                subj_chk = (getattr(mail, "subject", "") or "").strip()
+                from services.offer_matching import (
+                    _CONV_AD_URL_MIN_SUBJECT_SCORE,
+                    subject_is_informative,
+                    subject_match_score,
+                )
+                from services.offer_storage import find_offer_by_link
+
+                off_conv = await find_offer_by_link(
+                    session, user_id=int(tg_user.id), ad_url=conv_url
+                )
+                if off_conv and subject_is_informative(subj_chk):
+                    if subject_match_score(subj_chk, off_conv) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+                        url = conv_url
+                        break
+                    reasons.append("conversation_links: тема письма ≠ старый лот")
+                else:
+                    url = conv_url
+                    break
             reasons.append("conversation_links.ad_url пустой/нет")
 
             # 4) Offer.link by sender email (OfferEmail)
@@ -1480,12 +1498,17 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
             await callback.answer()
             return
 
+        subj_mail = (getattr(mail, "subject", "") or "").strip()
+        offer, url, title, price, offer_image = await finalize_aqua_listing_context(
+            session,
+            user_id=int(tg_user.id),
+            listing_url=url,
+            offer=offer,
+            subject=subj_mail,
+        )
         offer_id = int(offer.id) if offer else None
+        offer_title = (offer_effective_title(offer) or "").strip() if offer else title
 
-        offer_title = offer_effective_title(offer) or None
-        offer_image = offer_effective_photo(offer) or None
-        title = offer_title or (mail.subject or "").strip()
-        price = offer_effective_price(offer)
         if not title:
             await callback.message.answer("❌ Нет названия объявления (title).")
             await callback.answer()
@@ -1515,13 +1538,17 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
         )
         try:
             mail.generated_link = aqua_url
+            if offer_id:
+                mail.resolved_offer_id = int(offer_id)
+            mail.ad_url = url
         except Exception:
             pass
         await session.commit()
 
         mail_uid = str(getattr(mail, "imap_uid", "") or "")
-        meta_fm = FULL_META.get((acc_id, mail_uid)) or {}
-        anchor = _resolve_mail_anchor(acc_id, mail_uid, meta_fm, callback.message)
+        acc_id_fm = int(mail.account_id)
+        meta_fm = FULL_META.get((acc_id_fm, mail_uid)) or {}
+        anchor = _resolve_mail_anchor(acc_id_fm, mail_uid, meta_fm, callback.message)
         inbox_label = (getattr(tg_user, "sender_name", None) or "").strip()
         service = await get_user_aqua_service(session, tg_user)
         prof_display = (
@@ -1638,7 +1665,24 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
                 contact_email=contact_email,
             )
             if conv and conv.ad_url and str(conv.ad_url).strip():
-                return str(conv.ad_url).strip(), []
+                conv_url = str(conv.ad_url).strip()
+                subj_chk = (meta.get("subject") or "").strip()
+                from services.offer_matching import (
+                    _CONV_AD_URL_MIN_SUBJECT_SCORE,
+                    subject_is_informative,
+                    subject_match_score,
+                )
+                from services.offer_storage import find_offer_by_link
+
+                off_conv = await find_offer_by_link(
+                    session, user_id=int(owner_user_id), ad_url=conv_url
+                )
+                if off_conv and subject_is_informative(subj_chk):
+                    if subject_match_score(subj_chk, off_conv) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+                        return conv_url, []
+                    reasons.append("conversation_links: тема письма ≠ старый лот в диалоге")
+                else:
+                    return conv_url, []
             reasons.append("conversation_links.ad_url пустой/нет")
 
             # 4) url из Offer.link по OfferEmail (валидированные данные в БД)
@@ -1705,13 +1749,16 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
         user = await get_or_create_user(session, int(callback.from_user.id))
 
         mail = mail_pre
-        offer = offer_pre
+        offer, url, title, price, offer_image = await finalize_aqua_listing_context(
+            session,
+            user_id=int(owner_user_id),
+            listing_url=url,
+            offer=offer_pre,
+            subject=subj_pre,
+        )
         offer_id = int(offer.id) if offer else None
+        offer_title = (offer_effective_title(offer) or "").strip() if offer else title
 
-        offer_title = offer_effective_title(offer) or None
-        offer_image = offer_effective_photo(offer) or None
-        title = offer_title or ((mail.subject or "").strip() if mail else "")
-        price = offer_effective_price(offer)
         if not title:
             await callback.message.answer("❌ Нет названия объявления (title).")
             return await callback.answer()
@@ -1745,6 +1792,9 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
         if mail:
             try:
                 mail.generated_link = aqua_url
+                if offer_id:
+                    mail.resolved_offer_id = int(offer_id)
+                mail.ad_url = url
             except Exception:
                 pass
         await session.commit()
