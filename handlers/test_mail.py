@@ -26,7 +26,6 @@ from services.smtp_block_control import is_smtp_account_block_error, mark_accoun
 from services.smtp_delivery_verify import verify_message_in_sent
 from services.sender import mailing_plain_only_enabled
 from services.smtp_proxy_send import send_email_via_account_with_proxy
-from services.subject_offer import subject_for_offer
 from services.user_settings import get_user_setting, set_user_setting
 from sqlalchemy import func, select
 from utils.bg_jobs import is_running as bg_is_running
@@ -325,7 +324,10 @@ async def _build_test_message(
 
     if mailing_plain_only_enabled():
         body = ensure_plain_mail_body(body)
-    subject = subject_for_offer(item_title)
+    from services.subject_offer import resolve_mailing_subject_template, subject_for_offer
+
+    subject_tpl = await resolve_mailing_subject_template(session, user)
+    subject = subject_for_offer(item_title, template=subject_tpl)
     return subject, body, item_title
 
 

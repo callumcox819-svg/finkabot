@@ -701,37 +701,88 @@ async def ref_open_commands(callback: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "themes_menu")
 async def themes_menu(callback: CallbackQuery, state: FSMContext):
     await state.clear()
+    from services.subject_offer import MAILING_SUBJECT_PRESETS, global_subject_template
+
     async with Session() as session:
         user = await get_or_create_user(session, callback.from_user.id)
         cur = (await get_user_setting(session, user, SUBJECT_TEMPLATE_KEY) or "").strip()
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Изменить", callback_data="themes_edit")],
-        [InlineKeyboardButton(text="🗑 Очистить", callback_data="themes_clear")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
-    ])
-    cur_show = cur if cur else "—"
+    effective = cur or global_subject_template()
+    preset_rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for key, label in MAILING_SUBJECT_PRESETS:
+        mark = "🟩 " if label == effective else ""
+        row.append(
+            InlineKeyboardButton(
+                text=f"{mark}{label}",
+                callback_data=f"themes_preset:{key}",
+            )
+        )
+        if len(row) == 2:
+            preset_rows.append(row)
+            row = []
+    if row:
+        preset_rows.append(row)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            *preset_rows,
+            [InlineKeyboardButton(text="✏️ Свой шаблон", callback_data="themes_edit")],
+            [InlineKeyboardButton(text="🗑 Сброс (Re: OFFER)", callback_data="themes_clear")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
+        ]
+    )
+    cur_show = effective
+    example_title = "Pöytäliina"
+    from services.subject_offer import render_subject_with_offer
+
+    preview = render_subject_with_offer(cur_show, example_title)
     txt = (
-        "📌 <b>Темы</b>\n\n"
-        "Шаблон темы письма (поддерживает <code>OFFER</code>):\n"
-        f"<code>{cur_show}</code>\n\n"
-        "Пример: <code>OFFER | Antwort</code>"
+        "📌 <b>Тема рассылки (/send)</b>\n\n"
+        "В шаблоне <code>OFFER</code> = название объявления.\n\n"
+        f"Сейчас: <code>{cur_show}</code>\n"
+        f"Пример: <code>{preview}</code>\n\n"
+        "<i>Выбери готовый вариант или «Свой шаблон».</i>"
     )
     await _safe_send(callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML"))
     await callback.answer()
+
+
+@router.callback_query(F.data.startswith("themes_preset:"))
+async def themes_preset_set(callback: CallbackQuery, state: FSMContext) -> None:
+    from services.subject_offer import MAILING_SUBJECT_PRESETS
+
+    key = (callback.data or "").split(":", 1)[-1].strip()
+    tpl = ""
+    for k, label in MAILING_SUBJECT_PRESETS:
+        if k == key:
+            tpl = label
+            break
+    if not tpl:
+        return await callback.answer("Неизвестный шаблон", show_alert=True)
+
+    async with Session() as session:
+        user = await get_or_create_user(session, callback.from_user.id)
+        await set_user_setting(session, user, SUBJECT_TEMPLATE_KEY, tpl)
+        await session.commit()
+
+    await callback.answer(f"✅ {tpl}")
+    await themes_menu(callback, state)
 
 @router.callback_query(F.data == "themes_edit")
 async def themes_edit(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await state.set_state(_SettingsInput.subject_template)
     await _safe_send(callback.message.edit_text(
-        "📌 <b>Темы</b>\n\n"
-        "Отправь шаблон темы. Используй <code>OFFER</code>.\n"
-        "Чтобы удалить — отправь <code>-</code>.",
+        "📌 <b>Тема рассылки</b>\n\n"
+        "Отправь шаблон с <code>OFFER</code> (название товара).\n"
+        "Примеры: <code>Re: OFFER</code>, <code>Tuote: OFFER</code>\n"
+        "Сброс — отправь <code>-</code>.",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад", callback_data="themes_menu")]]),
         parse_mode="HTML",
     ))
     await callback.answer()
+
 
 @router.message(_SettingsInput.subject_template)
 async def themes_set(message: Message, state: FSMContext):
@@ -741,20 +792,40 @@ async def themes_set(message: Message, state: FSMContext):
     async with Session() as session:
         user = await get_or_create_user(session, message.from_user.id)
         await set_user_setting(session, user, SUBJECT_TEMPLATE_KEY, val)
+        await session.commit()
     await state.clear()
+    await _themes_menu_after_save(message, state, val)
 
-    # Показываем экран "Темы" сразу после сохранения, чтобы было видно — установлено или нет.
-    cur_show = val if val else "—"
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✏️ Изменить", callback_data="themes_edit")],
-        [InlineKeyboardButton(text="🗑 Очистить", callback_data="themes_clear")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
-    ])
+
+async def _themes_menu_after_save(message: Message, state: FSMContext, cur_show: str) -> None:
+    from services.subject_offer import MAILING_SUBJECT_PRESETS, global_subject_template, render_subject_with_offer
+
+    effective = cur_show or global_subject_template()
+    preset_rows: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for key, label in MAILING_SUBJECT_PRESETS:
+        mark = "🟩 " if label == effective else ""
+        row.append(
+            InlineKeyboardButton(text=f"{mark}{label}", callback_data=f"themes_preset:{key}")
+        )
+        if len(row) == 2:
+            preset_rows.append(row)
+            row = []
+    if row:
+        preset_rows.append(row)
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            *preset_rows,
+            [InlineKeyboardButton(text="✏️ Свой шаблон", callback_data="themes_edit")],
+            [InlineKeyboardButton(text="🗑 Сброс (Re: OFFER)", callback_data="themes_clear")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="settings_open")],
+        ]
+    )
+    preview = render_subject_with_offer(effective, "Pöytäliina")
     txt = (
-        "📌 <b>Темы</b>\n\n"
-        "Шаблон темы письма (поддерживает <code>OFFER</code>):\n"
-        f"<code>{cur_show}</code>\n\n"
-        "Пример: <code>OFFER | Antwort</code>"
+        "📌 <b>Тема рассылки (/send)</b>\n\n"
+        f"Сохранено: <code>{effective}</code>\n"
+        f"Пример: <code>{preview}</code>"
     )
     await message.answer(txt, reply_markup=kb, parse_mode="HTML")
 

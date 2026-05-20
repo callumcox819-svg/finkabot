@@ -14,9 +14,30 @@ def sanitize_email_subject(text: str) -> str:
     return s
 
 
+SUBJECT_TEMPLATE_SETTING = "subject_template"
+
+# Готовые шаблоны (⚙️ → Темы): OFFER заменяется на название объявления
+MAILING_SUBJECT_PRESETS: tuple[tuple[str, str], ...] = (
+    ("re_offer", "Re: OFFER"),
+    ("tuote", "Tuote: OFFER"),
+    ("kysymys", "Kysymys: OFFER"),
+    ("viesti", "Viesti – OFFER"),
+    ("osto", "Osto: OFFER"),
+    ("plain", "OFFER"),
+)
+
+
 def global_subject_template() -> str:
-    tpl = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "OFFER").strip()
-    return tpl or "OFFER"
+    tpl = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "Re: OFFER").strip()
+    return tpl or "Re: OFFER"
+
+
+async def resolve_mailing_subject_template(session, user) -> str:
+    """Шаблон темы для /send: сначала ⚙️ Темы, иначе GLOBAL_SUBJECT_TEMPLATE (Railway)."""
+    from services.user_settings import get_user_setting
+
+    custom = (await get_user_setting(session, user, SUBJECT_TEMPLATE_SETTING) or "").strip()
+    return custom or global_subject_template()
 
 
 def render_subject_with_offer(subject_template: str, offer_title: str) -> str:
@@ -31,5 +52,6 @@ def render_subject_with_offer(subject_template: str, offer_title: str) -> str:
     return out
 
 
-def subject_for_offer(offer_title: str) -> str:
-    return render_subject_with_offer(global_subject_template(), offer_title)
+def subject_for_offer(offer_title: str, *, template: str | None = None) -> str:
+    tpl = (template or "").strip() or global_subject_template()
+    return render_subject_with_offer(tpl, offer_title)
