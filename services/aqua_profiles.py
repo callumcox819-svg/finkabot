@@ -10,7 +10,7 @@ import aiohttp
 
 from config import config
 from services.aqua_keys import normalize_aqua_api_key
-from services.aqua_network import AquaError, _api_base, _auth_header
+from services.aqua_network import AquaError, _api_base, _api_host, _auth_header
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,8 @@ class AquaProfile:
 _DEFAULT_LIST_PATHS = (
     "/api/generate/single/profile/list",
     "/api/generate/single/profiles/list",
+    "/api/generate/single/profiles",
+    "/api/generate/single/profile",
     "/api/generate/single/profile/all",
 )
 
@@ -144,7 +146,7 @@ async def fetch_aqua_team_profiles(
 
     headers = {
         "Authorization": _auth_header(user_key),
-        "Host": "api.goo.network",
+        "Host": _api_host(),
         "X-Team-Key": team_key,
         "Content-Type": "application/json",
     }

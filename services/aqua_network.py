@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -13,13 +14,25 @@ from services.aqua_keys import normalize_aqua_api_key
 
 logger = logging.getLogger(__name__)
 
+# Команда AQUA (Финляндия) работает через legacy API, не api.goo.network.
+_DEFAULT_GOO_API_BASE = "https://api-old.goo.network"
+
 
 class AquaError(Exception):
     pass
 
 
 def _api_base() -> str:
-    return (getattr(config, "GOO_API_BASE", None) or "https://api.goo.network").strip().rstrip("/")
+    return (
+        getattr(config, "GOO_API_BASE", None) or _DEFAULT_GOO_API_BASE
+    ).strip().rstrip("/")
+
+
+def _api_host() -> str:
+    try:
+        return urlparse(_api_base()).netloc or "api-old.goo.network"
+    except Exception:
+        return "api-old.goo.network"
 
 
 def _auth_header(user_api_key: str) -> str:
@@ -71,7 +84,7 @@ async def _post_generate(
     url = f"{_api_base()}{path}"
     headers = {
         "Authorization": _auth_header(user_key),
-        "Host": "api.goo.network",
+        "Host": _api_host(),
         "X-Team-Key": team_key,
         "Content-Type": "application/json",
     }
