@@ -12,3 +12,14 @@ def apply_offer_to_text(text: str, offer_title: str) -> str:
     for needle in ('{{OFFER}}', '"OFFER"', "'OFFER'", "«OFFER»", "OFFER"):
         txt = txt.replace(needle, title)
     return txt
+
+
+def trim_trailing_offer_title(body: str, offer_title: str) -> str:
+    """Убрать дубль названия в конце тела, если оно уже в теме (OFFER в конце пресета)."""
+    b = (body or "").rstrip()
+    t = (offer_title or "").strip()
+    if not b or not t or len(t) < 3:
+        return body
+    if b.endswith(t):
+        b = b[: -len(t)].rstrip()
+    return b

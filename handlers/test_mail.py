@@ -319,6 +319,9 @@ async def _build_test_message(
 
     mail_link = "" if mailing_strip_link_enabled() else link
     body = apply_placeholders(base_text, link=mail_link, ctx=ctx)
+    from services.offer_text import trim_trailing_offer_title
+
+    body = trim_trailing_offer_title(body, item_title)
 
     if mailing_plain_only_enabled():
         body = ensure_plain_mail_body(body)

@@ -58,15 +58,13 @@ def _smtp_local_hostname() -> str | None:
     На Railway socket.getfqdn() часто даёт внутреннее имя контейнера — Gmail видит
     IP прокси (SOCKS), но в EHLO другое имя → хуже, чем десктопный софт с тем же прокси.
 
-    SMTP_EHLO_HOSTNAME / MAILING_EHLO_NAME — вручную; на Railway по умолчанию localhost.
+    SMTP_EHLO_HOSTNAME / MAILING_EHLO_NAME — только если задано в env (как happy88).
     """
     custom = (
         (os.getenv("SMTP_EHLO_HOSTNAME") or os.getenv("MAILING_EHLO_NAME") or "").strip()
     )
     if custom:
         return custom
-    if _running_on_railway():
-        return "localhost"
     return None
 
 
@@ -102,18 +100,10 @@ def _sanitize_header_line(value: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
-_HTML_HINT_RE = re.compile(
-    r"<\s*(html|body|head|div|p|br|img|a|table|span|center|font)\b",
-    re.I,
-)
-
-
 def _looks_like_html(body: str) -> bool:
     """Как happy88 — иначе другое MIME при том же пресете."""
     b = (body or "").lower()
-    if "<html" in b or "<body" in b or "</" in b:
-        return True
-    return bool(_HTML_HINT_RE.search(b))
+    return "<html" in b or "<body" in b or "</" in b
 
 
 def _env_flag(name: str, *, default: str = "1") -> bool:
