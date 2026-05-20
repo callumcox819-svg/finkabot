@@ -40,6 +40,30 @@ def _is_start_message(event: TelegramObject) -> bool:
     return text.startswith("/start")
 
 
+def _is_import_document_message(event: Message) -> bool:
+    """JSON/TXT для валидации — не блокировать при таймауте БД в middleware."""
+    doc = event.document
+    if not doc:
+        return False
+    fn = (doc.file_name or "").lower()
+    return fn.endswith((".json", ".txt"))
+
+
+def _bypass_access_db_check(event: TelegramObject) -> bool:
+    """Сообщения, которые должны дойти до хендлера даже если Postgres тормозит."""
+    if isinstance(event, Message):
+        if _is_start_message(event):
+            return True
+        if is_main_menu_text(event.text):
+            return True
+        if _is_import_document_message(event):
+            return True
+        t = (event.text or "").strip().lower()
+        if t in ("/ping", "/health"):
+            return True
+    return False
+
+
 def _is_non_private_message(event: TelegramObject) -> bool:
     """В группах/каналах не проверяем доступ по Message (пин, сервисные апдейты и т.д.)."""
     if not isinstance(event, Message):
@@ -123,8 +147,7 @@ class BotAccessMiddleware(BaseMiddleware):
                 return await handler(event, data)
             if getattr(user, "is_bot", False):
                 return await handler(event, data)
-            # /start не ждёт БД в middleware — проверка доступа внутри cmd_start (один запрос).
-            if _is_start_message(event):
+            if _bypass_access_db_check(event):
                 return await handler(event, data)
 
         try:
@@ -134,13 +157,19 @@ class BotAccessMiddleware(BaseMiddleware):
             )
         except asyncio.TimeoutError:
             logger.error("BotAccessMiddleware: DB timeout tg=%s", user.id)
-            if isinstance(event, Message) and (
-                _is_start_message(event) or is_main_menu_text(event.text)
-            ):
+            if _bypass_access_db_check(event):
                 return await handler(event, data)
-            if isinstance(event, CallbackQuery):
+            if isinstance(event, Message):
                 try:
-                    await event.answer("⏳ База данных занята, попробуйте через 5 сек.", show_alert=True)
+                    await event.answer(
+                        "⏳ База данных занята (идёт валидация или рассылка). "
+                        "Подожди 15–30 сек и повтори.",
+                    )
+                except Exception:
+                    pass
+            elif isinstance(event, CallbackQuery):
+                try:
+                    await event.answer("⏳ База занята, подожди 15 сек.", show_alert=True)
                 except Exception:
                     pass
             return None

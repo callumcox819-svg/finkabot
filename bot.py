@@ -256,12 +256,21 @@ async def _on_startup(bot: Bot) -> None:
     asyncio.create_task(_start_imap_delayed())
 
 
-async def _polling_heartbeat() -> None:
+async def _polling_heartbeat(bot: Bot) -> None:
     n = 0
     while True:
         await asyncio.sleep(30)
         n += 1
-        logger.info("💓 polling alive #%d", n)
+        extra = ""
+        try:
+            await bot.get_me()
+        except TelegramConflictError:
+            extra = " | ⚠️ CONFLICT: второй процесс с тем же BOT_TOKEN!"
+            logger.critical(extra)
+        except Exception as e:
+            extra = f" | getMe failed: {e}"
+            logger.warning("heartbeat getMe: %s", e)
+        logger.info("💓 polling alive #%d%s", n, extra)
 
 
 async def _on_error(event: ErrorEvent) -> None:
@@ -345,12 +354,15 @@ async def main() -> None:
     me = await bot.get_me()
     logger.info("✅ Bot @%s (id=%s) · Finland / AQUA. Polling…", me.username, me.id)
 
-    asyncio.create_task(_polling_heartbeat())
+    asyncio.create_task(_polling_heartbeat(bot))
 
     drop_pending = os.getenv("DROP_PENDING_UPDATES", "").strip() in {"1", "true", "yes"}
 
     try:
         await bot.delete_webhook(drop_pending_updates=drop_pending)
+        wh = await bot.get_webhook_info()
+        if wh.url:
+            logger.warning("⚠️ Webhook всё ещё установлен: %s — polling может не получать апдейты", wh.url)
         await dp.start_polling(bot, allowed_updates=allowed, drop_pending_updates=drop_pending)
     finally:
         _release_single_instance_lock()

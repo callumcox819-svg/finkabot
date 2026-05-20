@@ -20,10 +20,13 @@ class MessageLogMiddleware(BaseMiddleware):
     ) -> Any:
         if isinstance(event, Message):
             uid = getattr(event.from_user, "id", None)
+            doc = getattr(event, "document", None)
+            doc_name = (doc.file_name if doc else None) or ""
             logger.info(
-                "📩 MSG tg=%s text=%r",
+                "📩 MSG tg=%s text=%r doc=%r",
                 uid,
                 (event.text or event.caption or "")[:100],
+                doc_name[:80],
             )
         return await handler(event, data)
 

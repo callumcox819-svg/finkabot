@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-from aiogram import Router
+from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
 
@@ -44,8 +44,14 @@ async def _start_load_user(tg_id: int) -> tuple[bool, bool, bool]:
 
 
 @router.message(CommandStart())
+@router.message(F.text.in_({"/ping", "/health"}))
 async def cmd_start(message: Message) -> None:
     tg_id = int(message.from_user.id)
+    text = (message.text or "").strip().lower()
+    if text in ("/ping", "/health"):
+        await message.answer("🏓 pong — бот на связи.")
+        return
+
     logger.info("▶ HANDLER /start tg=%s", tg_id)
 
     try:

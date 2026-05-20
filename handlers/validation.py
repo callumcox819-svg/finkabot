@@ -279,7 +279,10 @@ async def validation_handler(message: Message):
     if not ext.endswith((".json", ".txt")):
         return await message.answer("❌ Пришли файл .json или .txt")
 
-    status_msg = await message.answer("📥 Файл принят. Подготавливаю данные…")
+    try:
+        status_msg = await message.answer("📥 Файл получен, читаю…")
+    except Exception:
+        status_msg = None
 
     try:
         if ext.endswith(".json"):
@@ -289,10 +292,22 @@ async def validation_handler(message: Message):
             text = await _load_text_from_telegram_doc(message)
             items = _parse_txt_offers(text)
     except Exception as e:
-        return await status_msg.edit_text(f"❌ Ошибка чтения файла: {e}")
+        err = f"❌ Ошибка чтения файла: {e}"
+        if status_msg:
+            return await status_msg.edit_text(err)
+        return await message.answer(err)
 
     if not items:
-        return await status_msg.edit_text("❌ В файле не найдено записей.")
+        err = "❌ В файле не найдено записей."
+        if status_msg:
+            return await status_msg.edit_text(err)
+        return await message.answer(err)
+
+    if status_msg:
+        try:
+            await status_msg.edit_text("📥 Файл принят. Подготавливаю данные…")
+        except Exception:
+            pass
 
     tg_id = message.from_user.id
     if bg_is_running(tg_id, "validation"):
