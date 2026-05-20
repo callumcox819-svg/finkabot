@@ -434,17 +434,23 @@ async def resolve_offer_for_aqua_link(
     fe = (from_email or "").strip()
 
     if subject_is_informative(subj):
-        for fn in (resolve_best_offer_by_subject, resolve_best_offer_by_subject_global):
-            off = await fn(
+        off = await resolve_best_offer_by_subject(
+            session,
+            user_id=int(user_id),
+            from_email=fe,
+            subject=subj,
+            from_name=from_name,
+            body_text=body_text,
+        )
+        if not off:
+            off = await resolve_best_offer_by_subject_global(
                 session,
                 user_id=int(user_id),
-                from_email=fe,
                 subject=subj,
                 from_name=from_name,
                 body_text=body_text,
             )
-            if not off:
-                continue
+        if off:
             link = (off.link or "").strip()
             if link and subject_match_score(subj, off) >= _AQUA_SUBJECT_MIN_SCORE:
                 return off, link

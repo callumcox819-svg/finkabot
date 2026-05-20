@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -62,6 +63,24 @@ from handlers.templates import load_templates, TemplateItem
 from utils.bg_jobs import is_running as bg_is_running, start as bg_start
 
 router = Router()
+
+logger = logging.getLogger(__name__)
+
+
+async def _run_aqua_link_bg(callback: CallbackQuery, work) -> None:
+    """Фоновая AQUA-ссылка: при падении — сообщение в чат (не молчим)."""
+    try:
+        await work()
+    except Exception as e:
+        logger.exception("aqua_link background failed tg=%s", callback.from_user.id)
+        try:
+            await callback.message.answer(
+                f"❌ <b>Ошибка создания ссылки</b>\n<code>{_e(str(e)[:300])}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
 
 def _incoming_smtp_wait_sec() -> int:
     from services.smtp_proxy_send import REPLY_SMTP_MAX_PROXIES, REPLY_SMTP_TIMEOUT_SEC
@@ -1350,7 +1369,7 @@ async def cb_create_goo_link_from_db(callback: CallbackQuery):
         pass
 
     async def _link_job() -> None:
-        await _create_aqua_link_from_db_work(callback, mail_id)
+        await _run_aqua_link_bg(callback, lambda: _create_aqua_link_from_db_work(callback, mail_id))
 
     if not bg_start(uid, "aqua_link", _link_job()):
         return await callback.answer("⏳ Ссылка уже создаётся…", show_alert=True)
@@ -1501,7 +1520,9 @@ async def cb_create_goo_link(callback: CallbackQuery):
         pass
 
     async def _link_job() -> None:
-        await _create_aqua_link_work(callback, acc_id, uid, meta)
+        await _run_aqua_link_bg(
+            callback, lambda: _create_aqua_link_work(callback, acc_id, uid, meta)
+        )
 
     if not bg_start(uid_tg, "aqua_link", _link_job()):
         return await callback.answer("⏳ Ссылка уже создаётся…", show_alert=True)
