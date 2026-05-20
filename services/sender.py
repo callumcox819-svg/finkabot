@@ -39,24 +39,6 @@ SMTP_TIMEOUT_SEC = max(20, min(120, int(os.getenv("SMTP_TIMEOUT_SEC", "60"))))
 logger = logging.getLogger(__name__)
 
 
-def _smtp_connect_kwargs(timeout: float) -> dict:
-    """
-    Аргументы для smtplib.SMTP(...).
-
-    По умолчанию Python подставляет socket.getfqdn() в EHLO — на Railway/контейнере
-    часто получается внутреннее имя (railway.internal и т.п.). Другой софт может
-    слать другой hostname — сравните «Показать оригинал» с письма из бота и из софта.
-
-    Задайте SMTP_EHLO_HOSTNAME (или SMTP_LOCAL_HOSTNAME) — нормальный FQDN, который
-    вы контролируете, если провайдер SMTP это допускает.
-    """
-    kw: dict = {"timeout": float(timeout)}
-    h = (os.getenv("SMTP_EHLO_HOSTNAME") or os.getenv("SMTP_LOCAL_HOSTNAME") or "").strip()
-    if h:
-        kw["local_hostname"] = h
-    return kw
-
-
 def _sanitize_header_line(value: str) -> str:
     """Заголовки SMTP не допускают переносы строк."""
     s = (value or "").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
@@ -480,7 +462,7 @@ def _send_plain_sync(
 
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
     try:
-        with smtplib.SMTP(host, port, **_smtp_connect_kwargs(tmo)) as s:
+        with smtplib.SMTP(host, port, timeout=tmo) as s:
             s.ehlo()
             s.starttls()
             s.ehlo()
@@ -565,7 +547,7 @@ def _send_batch_sync(
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
 
     try:
-        with smtplib.SMTP(host, port, **_smtp_connect_kwargs(tmo)) as s:
+        with smtplib.SMTP(host, port, timeout=tmo) as s:
             s.ehlo()
             s.starttls()
             s.ehlo()
