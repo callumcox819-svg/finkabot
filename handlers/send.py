@@ -202,12 +202,16 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
         "IMAGE_URL": image_url,
     }
 
-    # Умные пресеты (случайный текст) → иначе «Первые смс»
+    # Умные пресеты → иначе «Первые смс»
     base_text = ""
     try:
-        from handlers.templates import pick_random_smart_preset
+        from handlers.templates import pick_first_smart_preset, pick_random_smart_preset
+        from services.sender import _env_flag
 
-        base_text = await pick_random_smart_preset(tg_user_id, item_title)
+        if _env_flag("MAILING_FIXED_PRESET", default="1"):
+            base_text = await pick_first_smart_preset(tg_user_id, item_title)
+        else:
+            base_text = await pick_random_smart_preset(tg_user_id, item_title)
     except Exception:
         base_text = ""
     if not (base_text or "").strip():
@@ -218,8 +222,14 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
         except Exception:
             base_text = ("Hello! Is this item still available? " + (item_title or "OFFER")).strip()
 
-    body = apply_placeholders(base_text, link=link, ctx=ctx)
-    from services.sender import ensure_plain_mail_body, mailing_plain_only_enabled
+    from services.sender import (
+        ensure_plain_mail_body,
+        mailing_plain_only_enabled,
+        mailing_strip_link_enabled,
+    )
+
+    mail_link = "" if mailing_strip_link_enabled() else link
+    body = apply_placeholders(base_text, link=mail_link, ctx=ctx)
 
     if mailing_plain_only_enabled():
         body = ensure_plain_mail_body(body)

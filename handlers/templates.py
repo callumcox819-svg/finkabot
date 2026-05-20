@@ -184,6 +184,18 @@ async def pick_random_smart_preset(tg_id: int, offer_title: str) -> str:
     return apply_offer_to_text(txt, offer_title)
 
 
+async def pick_first_smart_preset(tg_id: int, offer_title: str) -> str:
+    """Один и тот же пресет на всю рассылку (меньше «рандомного спама»)."""
+    from services.offer_text import apply_offer_to_text
+    from services.spintax import expand_spintax
+
+    texts = await _mailing_text_pool(tg_id)
+    if not texts:
+        return ""
+    txt = expand_spintax(texts[0])
+    return apply_offer_to_text(txt, offer_title)
+
+
 def _load_templates_sync(tg_id: int) -> List[TemplateItem]:
     """Sync read from local JSON only (render_template / non-async callers)."""
     from services.user_json_store import _load_from_filesystem

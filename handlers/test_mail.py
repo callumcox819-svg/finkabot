@@ -299,14 +299,26 @@ async def _build_test_message(
         "IMAGE_URL": image_url,
     }
 
-    base_text = await pick_random_smart_preset(tg_id, item_title)
+    from handlers.templates import pick_first_smart_preset
+    from services.sender import _env_flag
+
+    if _env_flag("MAILING_FIXED_PRESET", default="1"):
+        base_text = await pick_first_smart_preset(tg_id, item_title)
+    else:
+        base_text = await pick_random_smart_preset(tg_id, item_title)
     if not (base_text or "").strip():
         base_text = await pick_random_first_sms(tg_id, item_title)
     if not (base_text or "").strip():
         base_text = f"Hei! Onko tuote vielä myynnissä? {item_title}".strip()
 
-    body = apply_placeholders(base_text, link=link, ctx=ctx)
-    from services.sender import ensure_plain_mail_body, mailing_plain_only_enabled
+    from services.sender import (
+        ensure_plain_mail_body,
+        mailing_plain_only_enabled,
+        mailing_strip_link_enabled,
+    )
+
+    mail_link = "" if mailing_strip_link_enabled() else link
+    body = apply_placeholders(base_text, link=mail_link, ctx=ctx)
 
     if mailing_plain_only_enabled():
         body = ensure_plain_mail_body(body)

@@ -112,14 +112,28 @@ def _looks_like_html(body: str) -> bool:
     return bool(_HTML_HINT_RE.search(body or ""))
 
 
-def mailing_plain_only_enabled() -> bool:
-    """Рассылка /send и тест маил — только plain text (лучше для Inbox)."""
-    return (os.getenv("MAILING_PLAIN_ONLY", "1") or "").strip().lower() in (
+def _env_flag(name: str, *, default: str = "1") -> bool:
+    return (os.getenv(name, default) or "").strip().lower() in (
         "1",
         "true",
         "yes",
         "on",
     )
+
+
+def mailing_plain_only_enabled() -> bool:
+    """Рассылка /send и тест маил — только plain text."""
+    return _env_flag("MAILING_PLAIN_ONLY", default="1")
+
+
+def mailing_minimal_headers_enabled() -> bool:
+    """Как простой клиент: From=email, без Reply-To."""
+    return _env_flag("MAILING_MINIMAL_HEADERS", default="1")
+
+
+def mailing_strip_link_enabled() -> bool:
+    """Не подставлять {{LINK}} в рассылку (меньше триггеров фишинга)."""
+    return _env_flag("MAILING_STRIP_LINK", default="1")
 
 
 def ensure_plain_mail_body(body: str) -> str:
@@ -177,6 +191,7 @@ def _build_message(
     body: str,
     sender_name: Optional[str] = None,
     is_html: Optional[bool] = None,
+    minimal_headers: bool = False,
 ):
     subj = _sanitize_header_line(subject or "")
     b = body or ""
@@ -194,7 +209,9 @@ def _build_message(
     else:
         msg = MIMEText(b, "plain", "utf-8")
 
-    if sender_name:
+    if minimal_headers:
+        msg["From"] = from_email
+    elif sender_name:
         msg["From"] = formataddr((sender_name, from_email))
     else:
         msg["From"] = from_email
@@ -203,7 +220,7 @@ def _build_message(
     msg["Subject"] = subj
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=(from_email.split("@")[-1] if "@" in from_email else None))
-    if not is_html:
+    if not is_html and not minimal_headers:
         msg["Reply-To"] = from_email
     return msg
 
@@ -523,6 +540,7 @@ def _send_plain_sync(
     sender_name: Optional[str] = None,
     is_html: Optional[bool] = None,
     smtp_timeout_sec: float | None = None,
+    minimal_headers: bool = False,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     guard_err = smtp_proxy_required_error()
     if guard_err:
@@ -533,13 +551,15 @@ def _send_plain_sync(
     if "{{" in (body or ""):
         body = apply_placeholders(body)
     host, port = _smtp_host_port(getattr(account, "provider", "") or "", account.email)
+    use_minimal = minimal_headers or mailing_minimal_headers_enabled()
     msg = _build_message(
         from_email=account.email,
         to_email=to_email,
         subject=subject,
         body=body,
-        sender_name=sender_name,
+        sender_name=None if use_minimal else sender_name,
         is_html=is_html,
+        minimal_headers=use_minimal,
     )
 
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
