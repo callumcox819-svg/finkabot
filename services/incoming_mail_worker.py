@@ -804,7 +804,16 @@ def build_kb(
     rows: List[List[InlineKeyboardButton]] = [
         [InlineKeyboardButton(text="🌍 Перевести", callback_data=translate_cb)],
         [InlineKeyboardButton(text="🔗 Создать ссылку", callback_data=link_cb)],
-        [InlineKeyboardButton(text="📝 Написать ещё", callback_data=f"mail_reply:{acc_id}:{uid}")],
+        [
+            InlineKeyboardButton(
+                text="📝 Написать ещё",
+                callback_data=(
+                    f"mail_reply_db:{int(mail_id)}"
+                    if mail_id
+                    else f"mail_reply:{acc_id}:{uid}"
+                ),
+            )
+        ],
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

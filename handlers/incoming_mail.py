@@ -531,28 +531,159 @@ class _MailReplyState(StatesGroup):
     waiting_custom_html = State()
 
 
-def _kb_reply_choice(acc_id: int, uid: str):
+def _is_primary_mail_reply_cb(data: str | None) -> bool:
+    """Только mail_reply:acc:uid — не mail_reply_mode / mail_reply_html / mail_reply_db."""
+    d = (data or "").strip()
+    return d.startswith("mail_reply:") and d.split(":", 1)[0] == "mail_reply"
+
+
+def _kb_reply_choice(acc_id: int, uid: str, *, mail_id: int | None = None):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+    uid_s = str(uid)
+    mid = f":{int(mail_id)}" if mail_id else ""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="📄 Отправить пресет",
-                    callback_data=f"mail_reply_mode:preset:{acc_id}:{uid}",
+                    callback_data=f"mail_reply_mode:preset:{acc_id}:{uid_s}{mid}",
                 ),
                 InlineKeyboardButton(
                     text="🧩 Отправить HTML",
-                    callback_data=f"mail_reply_mode:html:{acc_id}:{uid}",
+                    callback_data=f"mail_reply_mode:html:{acc_id}:{uid_s}{mid}",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🚫 Отмена",
-                    callback_data=f"mail_reply_mode:cancel:{acc_id}:{uid}",
+                    callback_data=f"mail_reply_mode:cancel:{acc_id}:{uid_s}{mid}",
                 )
             ],
         ]
+    )
+
+
+async def _open_mail_reply_menu(
+    callback: CallbackQuery,
+    state: FSMContext,
+    *,
+    acc_id: int,
+    uid: str,
+    mail_id: int | None = None,
+) -> None:
+    """Меню ответа на письмо — на той же карточке (edit), иначе reply в чат."""
+    try:
+        await callback.answer("✉️ Выберите способ ответа", show_alert=False)
+    except Exception:
+        pass
+
+    uid_key = str(uid)
+    meta: dict = dict(FULL_META.get((acc_id, uid_key)) or {})
+
+    async with Session() as session:
+        if mail_id:
+            mail_row = (
+                await session.execute(
+                    sa_select(IncomingMail).where(IncomingMail.id == int(mail_id)).limit(1)
+                )
+            ).scalars().first()
+            if mail_row:
+                acc_id = int(mail_row.account_id)
+                uid_key = str(mail_row.imap_uid)
+                meta = {
+                    "from_email": mail_row.from_email or "",
+                    "subject": mail_row.subject or "",
+                    "account_email": mail_row.account_email or "",
+                }
+
+        to_email, subject, account_email = await _resolve_reply_recipient(
+            session,
+            acc_id,
+            uid_key,
+            meta=meta,
+            state_data={},
+        )
+
+        inbox_label = ""
+        try:
+            user = await get_or_create_user(session, int(callback.from_user.id))
+            inbox_label = (getattr(user, "sender_name", None) or "").strip()
+        except Exception:
+            pass
+
+    if not to_email or "@" not in to_email:
+        try:
+            await callback.answer(
+                "Не вижу email получателя. Загрузите VOID+валидацию или откройте свежее письмо.",
+                show_alert=True,
+            )
+        except Exception:
+            pass
+        return
+
+    fm = dict(FULL_META.get((acc_id, uid_key)) or meta)
+    fm.update(
+        {
+            "from_email": to_email,
+            "subject": subject,
+            "account_email": account_email,
+            "tg_card_message_id": int(callback.message.message_id) if callback.message else None,
+        }
+    )
+    FULL_META[(acc_id, uid_key)] = fm
+
+    await state.set_state(_MailReplyState.waiting_choice)
+    kb = _kb_reply_choice(acc_id, uid_key, mail_id=mail_id)
+    ui_message_id: int | None = None
+    card = callback.message
+
+    if card:
+        try:
+            cur = (card.html_text or card.text or "").strip()
+            marker = "Выберите вариант ответа"
+            if marker not in cur:
+                new_text = (
+                    f"{cur}\n\n<b>✉️ {marker}:</b>\n"
+                    f"Кому: <code>{_e(to_email)}</code>"
+                )
+            else:
+                new_text = cur
+            await card.edit_text(
+                new_text,
+                reply_markup=kb,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+            ui_message_id = int(card.message_id)
+        except Exception as e:
+            logger.warning("mail_reply edit_text failed acc=%s uid=%s: %s", acc_id, uid_key, e)
+            try:
+                ui = await card.reply(
+                    f"<b>✉️ {REPLY_CHOICE_TEXT}</b>\nКому: <code>{_e(to_email)}</code>",
+                    reply_markup=kb,
+                    parse_mode="HTML",
+                )
+                ui_message_id = int(ui.message_id)
+            except Exception:
+                logger.exception("mail_reply reply() failed acc=%s uid=%s", acc_id, uid_key)
+                sent = await callback.bot.send_message(
+                    int(card.chat.id),
+                    f"✉️ {REPLY_CHOICE_TEXT}\nКому: {to_email}",
+                    reply_markup=kb,
+                )
+                ui_message_id = int(sent.message_id)
+
+    await state.update_data(
+        acc_id=acc_id,
+        uid=uid_key,
+        mail_id=int(mail_id) if mail_id else None,
+        to_email=to_email,
+        subject=subject,
+        account_email=account_email,
+        anchor_message_id=int(card.message_id) if card else None,
+        ui_message_id=ui_message_id,
+        inbox_label=inbox_label,
     )
 
 
@@ -1649,7 +1780,32 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
         await callback.answer("Готово ✅")
 
 
-@router.callback_query(F.data.startswith("mail_reply:"))
+@router.callback_query(F.data.startswith("mail_reply_db:"))
+async def cb_mail_reply_db(callback: CallbackQuery, state: FSMContext):
+    try:
+        mail_id = int((callback.data or "").split(":", 1)[1])
+    except Exception:
+        return await callback.answer("Неверные данные", show_alert=True)
+
+    async with Session() as session:
+        mail = (
+            await session.execute(
+                sa_select(IncomingMail).where(IncomingMail.id == int(mail_id)).limit(1)
+            )
+        ).scalars().first()
+    if not mail:
+        return await callback.answer("Письмо не найдено в БД", show_alert=True)
+
+    await _open_mail_reply_menu(
+        callback,
+        state,
+        acc_id=int(mail.account_id),
+        uid=str(mail.imap_uid),
+        mail_id=int(mail.id),
+    )
+
+
+@router.callback_query(F.data.func(_is_primary_mail_reply_cb))
 async def cb_mail_reply(callback: CallbackQuery, state: FSMContext):
     try:
         _, acc_id, uid = (callback.data or "").split(":", 2)
@@ -1657,53 +1813,7 @@ async def cb_mail_reply(callback: CallbackQuery, state: FSMContext):
     except Exception:
         return await callback.answer("Неверные данные", show_alert=True)
 
-    meta = FULL_META.get((acc_id, uid)) or {}
-    async with Session() as session:
-        to_email, subject, account_email = await _resolve_reply_recipient(
-            session, acc_id, uid, meta=meta, state_data={}
-        )
-
-    if not to_email or "@" not in to_email:
-        return await callback.answer(
-            "Не вижу email получателя. Откройте карточку письма и нажмите «Написать ещё» снова.",
-            show_alert=True,
-        )
-
-    inbox_label = ""
-    try:
-        async with Session() as session:
-            user = await get_or_create_user(session, int(callback.from_user.id))
-            inbox_label = (getattr(user, "sender_name", None) or "").strip()
-    except Exception:
-        pass
-
-    fm = dict(FULL_META.get((acc_id, uid)) or meta)
-    fm.update(
-        {
-            "from_email": to_email,
-            "subject": subject,
-            "account_email": account_email,
-            "tg_card_message_id": int(callback.message.message_id),
-        }
-    )
-    FULL_META[(acc_id, uid)] = fm
-
-    await state.set_state(_MailReplyState.waiting_choice)
-    ui = await callback.message.answer(
-        REPLY_CHOICE_TEXT,
-        reply_markup=_kb_reply_choice(acc_id, uid),
-    )
-    await state.update_data(
-        acc_id=acc_id,
-        uid=uid,
-        to_email=to_email,
-        subject=subject,
-        account_email=account_email,
-        anchor_message_id=int(callback.message.message_id),
-        ui_message_id=int(ui.message_id),
-        inbox_label=inbox_label,
-    )
-    await callback.answer()
+    await _open_mail_reply_menu(callback, state, acc_id=acc_id, uid=str(uid))
 
 
 @router.callback_query(F.data.startswith("mail_reply_mode:"))
