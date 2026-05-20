@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import re
+import socket
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -37,6 +38,61 @@ SMTP_BY_PROVIDER = {
 SMTP_TIMEOUT_SEC = max(20, min(120, int(os.getenv("SMTP_TIMEOUT_SEC", "60"))))
 
 logger = logging.getLogger(__name__)
+
+_ehlo_logged = False
+
+
+def _running_on_railway() -> bool:
+    return bool(
+        (os.getenv("RAILWAY_ENVIRONMENT") or "").strip()
+        or (os.getenv("RAILWAY_PROJECT_ID") or "").strip()
+        or (os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
+    )
+
+
+def _smtp_local_hostname() -> str | None:
+    """
+    Имя в EHLO при подключении к SMTP (не From, не тема письма).
+
+    На Railway socket.getfqdn() часто даёт внутреннее имя контейнера — Gmail видит
+    IP прокси (SOCKS), но в EHLO другое имя → хуже, чем десктопный софт с тем же прокси.
+
+    SMTP_EHLO_HOSTNAME / MAILING_EHLO_NAME — вручную; на Railway по умолчанию localhost.
+    """
+    custom = (
+        (os.getenv("SMTP_EHLO_HOSTNAME") or os.getenv("MAILING_EHLO_NAME") or "").strip()
+    )
+    if custom:
+        return custom
+    if _running_on_railway():
+        return "localhost"
+    return None
+
+
+def _smtp_connect_kwargs(timeout: float) -> dict:
+    kw: dict = {"timeout": float(timeout)}
+    host = _smtp_local_hostname()
+    if host:
+        kw["local_hostname"] = host
+    return kw
+
+
+def _log_smtp_ehlo_once() -> None:
+    global _ehlo_logged
+    if _ehlo_logged:
+        return
+    _ehlo_logged = True
+    try:
+        fqdn = socket.getfqdn()
+    except Exception:
+        fqdn = "?"
+    chosen = _smtp_local_hostname() or fqdn
+    logger.info(
+        "SMTP EHLO: machine_fqdn=%r chosen=%r railway=%s",
+        fqdn,
+        chosen,
+        _running_on_railway(),
+    )
 
 
 def _sanitize_header_line(value: str) -> str:
@@ -487,8 +543,9 @@ def _send_plain_sync(
     )
 
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
+    _log_smtp_ehlo_once()
     try:
-        with smtplib.SMTP(host, port, timeout=tmo) as s:
+        with smtplib.SMTP(host, port, **_smtp_connect_kwargs(tmo)) as s:
             s.ehlo()
             s.starttls()
             s.ehlo()
@@ -572,8 +629,9 @@ def _send_batch_sync(
     results: List[Tuple[bool, Optional[str]]] = []
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
 
+    _log_smtp_ehlo_once()
     try:
-        with smtplib.SMTP(host, port, timeout=tmo) as s:
+        with smtplib.SMTP(host, port, **_smtp_connect_kwargs(tmo)) as s:
             s.ehlo()
             s.starttls()
             s.ehlo()
