@@ -328,13 +328,7 @@ async def _build_test_message(
         "IMAGE_URL": image_url,
     }
 
-    from handlers.templates import pick_first_smart_preset
-    from services.sender import _env_flag
-
-    if _env_flag("MAILING_FIXED_PRESET", default="0"):
-        base_text = await pick_first_smart_preset(tg_id, item_title)
-    else:
-        base_text = await pick_random_smart_preset(tg_id, item_title)
+    base_text = await pick_random_smart_preset(tg_id, item_title)
     if not (base_text or "").strip():
         base_text = await pick_random_first_sms(tg_id, item_title)
     if not (base_text or "").strip():

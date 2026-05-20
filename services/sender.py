@@ -4,7 +4,6 @@ import asyncio
 import logging
 import os
 import re
-import socket
 import smtplib
 from email.message import EmailMessage
 from email.mime.text import MIMEText
@@ -40,59 +39,6 @@ SMTP_TIMEOUT_SEC = max(20, min(120, int(os.getenv("SMTP_TIMEOUT_SEC", "60"))))
 
 logger = logging.getLogger(__name__)
 
-_ehlo_logged = False
-
-
-def _running_on_railway() -> bool:
-    return bool(
-        (os.getenv("RAILWAY_ENVIRONMENT") or "").strip()
-        or (os.getenv("RAILWAY_PROJECT_ID") or "").strip()
-        or (os.getenv("RAILWAY_SERVICE_NAME") or "").strip()
-    )
-
-
-def _smtp_local_hostname() -> str | None:
-    """
-    Имя в EHLO при подключении к SMTP (не From, не тема письма).
-
-    На Railway socket.getfqdn() часто даёт внутреннее имя контейнера — Gmail видит
-    IP прокси (SOCKS), но в EHLO другое имя → хуже, чем десктопный софт с тем же прокси.
-
-    SMTP_EHLO_HOSTNAME / MAILING_EHLO_NAME — только если задано в env (как happy88).
-    """
-    custom = (
-        (os.getenv("SMTP_EHLO_HOSTNAME") or os.getenv("MAILING_EHLO_NAME") or "").strip()
-    )
-    if custom:
-        return custom
-    return None
-
-
-def _smtp_connect_kwargs(timeout: float) -> dict:
-    kw: dict = {"timeout": float(timeout)}
-    host = _smtp_local_hostname()
-    if host:
-        kw["local_hostname"] = host
-    return kw
-
-
-def _log_smtp_ehlo_once() -> None:
-    global _ehlo_logged
-    if _ehlo_logged:
-        return
-    _ehlo_logged = True
-    try:
-        fqdn = socket.getfqdn()
-    except Exception:
-        fqdn = "?"
-    chosen = _smtp_local_hostname() or fqdn
-    logger.info(
-        "SMTP EHLO: machine_fqdn=%r chosen=%r railway=%s",
-        fqdn,
-        chosen,
-        _running_on_railway(),
-    )
-
 
 def _sanitize_header_line(value: str) -> str:
     """Заголовки SMTP не допускают переносы строк."""
@@ -106,35 +52,13 @@ def _looks_like_html(body: str) -> bool:
     return "<html" in b or "<body" in b or "</" in b
 
 
-def _env_flag(name: str, *, default: str = "1") -> bool:
+def _env_flag(name: str, *, default: str = "0") -> bool:
     return (os.getenv(name, default) or "").strip().lower() in (
         "1",
         "true",
         "yes",
         "on",
     )
-
-
-def mailing_plain_only_enabled() -> bool:
-    return _env_flag("MAILING_PLAIN_ONLY", default="0")
-
-
-def mailing_minimal_headers_enabled() -> bool:
-    return _env_flag("MAILING_MINIMAL_HEADERS", default="0")
-
-
-def mailing_strip_link_enabled() -> bool:
-    return _env_flag("MAILING_STRIP_LINK", default="0")
-
-
-def ensure_plain_mail_body(body: str) -> str:
-    """Убрать HTML/картинки из тела перед массовой отправкой."""
-    b = (body or "").strip()
-    if not b:
-        return b
-    if _looks_like_html(b):
-        b = _strip_html(b)
-    return b
 
 
 def _smtp_host_port(provider: str, email: str) -> tuple[str, int]:
@@ -191,7 +115,6 @@ def _build_message(
     body: str,
     sender_name: Optional[str] = None,
     is_html: Optional[bool] = None,
-    minimal_headers: bool = False,
 ):
     subj = _sanitize_header_line(subject or "")
     b = body or ""
@@ -206,9 +129,7 @@ def _build_message(
         plain = _strip_html(b) or " "
         msg.attach(MIMEText(plain, "plain", "utf-8"))
         msg.attach(MIMEText(b, "html", "utf-8"))
-        if minimal_headers:
-            msg["From"] = from_email
-        elif sender_name:
+        if sender_name:
             msg["From"] = formataddr((sender_name, from_email))
         else:
             msg["From"] = from_email
@@ -218,16 +139,12 @@ def _build_message(
         msg["Message-ID"] = make_msgid(
             domain=(from_email.split("@")[-1] if "@" in from_email else None)
         )
-        if not minimal_headers:
-            msg["Reply-To"] = from_email
+        msg["Reply-To"] = from_email
         return msg
 
-    # Plain: EmailMessage — как Thunderbird/Outlook (не base64-блок из MIMEText)
     msg = EmailMessage()
     msg.set_content(b, subtype="plain", charset="utf-8", cte=_plain_body_content_transfer_encoding(b))
-    if minimal_headers:
-        msg["From"] = from_email
-    elif sender_name:
+    if sender_name:
         msg["From"] = formataddr((sender_name, from_email))
     else:
         msg["From"] = from_email
@@ -237,8 +154,7 @@ def _build_message(
     msg["Message-ID"] = make_msgid(
         domain=(from_email.split("@")[-1] if "@" in from_email else None)
     )
-    if not minimal_headers:
-        msg["Reply-To"] = from_email
+    msg["Reply-To"] = from_email
     return msg
 
 
@@ -557,7 +473,6 @@ def _send_plain_sync(
     sender_name: Optional[str] = None,
     is_html: Optional[bool] = None,
     smtp_timeout_sec: float | None = None,
-    minimal_headers: bool = False,
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     guard_err = smtp_proxy_required_error()
     if guard_err:
@@ -568,18 +483,16 @@ def _send_plain_sync(
     if "{{" in (body or ""):
         body = apply_placeholders(body)
     host, port = _smtp_host_port(getattr(account, "provider", "") or "", account.email)
-    use_minimal = minimal_headers or mailing_minimal_headers_enabled()
     msg = _build_message(
         from_email=account.email,
         to_email=to_email,
         subject=subject,
         body=body,
-        sender_name=None if use_minimal else sender_name,
+        sender_name=sender_name,
         is_html=is_html,
-        minimal_headers=use_minimal,
     )
 
-    if _env_flag("MAIL_DEBUG", default="0"):
+    if _env_flag("MAIL_DEBUG"):
         try:
             raw = msg.as_string()[:1200]
             logger.info(
@@ -592,9 +505,8 @@ def _send_plain_sync(
             pass
 
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
-    _log_smtp_ehlo_once()
     try:
-        with smtplib.SMTP(host, port, **_smtp_connect_kwargs(tmo)) as s:
+        with smtplib.SMTP(host, port, timeout=tmo) as s:
             s.ehlo()
             s.starttls()
             s.ehlo()
@@ -678,9 +590,8 @@ def _send_batch_sync(
     results: List[Tuple[bool, Optional[str]]] = []
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
 
-    _log_smtp_ehlo_once()
     try:
-        with smtplib.SMTP(host, port, **_smtp_connect_kwargs(tmo)) as s:
+        with smtplib.SMTP(host, port, timeout=tmo) as s:
             s.ehlo()
             s.starttls()
             s.ehlo()

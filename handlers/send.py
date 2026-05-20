@@ -204,13 +204,9 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
     # Умные пресеты (случайный текст) → иначе «Первые смс» — как happy88
     base_text = ""
     try:
-        from handlers.templates import pick_first_smart_preset, pick_random_smart_preset
-        from services.sender import _env_flag
+        from handlers.templates import pick_random_smart_preset
 
-        if _env_flag("MAILING_FIXED_PRESET", default="0"):
-            base_text = await pick_first_smart_preset(tg_user_id, item_title)
-        else:
-            base_text = await pick_random_smart_preset(tg_user_id, item_title)
+        base_text = await pick_random_smart_preset(tg_user_id, item_title)
     except Exception:
         base_text = ""
     if not (base_text or "").strip():
@@ -444,8 +440,7 @@ async def _notify_sending_finished(*, bot: Bot, chat_id: int, tg_user_id: int) -
         f"Ошибок отправки: <b>{failed}</b>\n"
         f"Email в очереди: <b>{pending}</b>"
         f"{inbox_hint}\n\n"
-        f"<i>Проверьте у получателя и папку <b>Спам</b>. "
-        f"Рассылка: plain text (MAILING_PLAIN_ONLY). /imap_diag — отбои vs ответы.</i>"
+        f"<i>Проверьте у получателя и папку <b>Спам</b>. /imap_diag — отбои vs ответы.</i>"
     )
     if failed > 0 and (state.last_error or "").strip() not in ("", "-"):
         who = f"\nПоследний адрес: <code>{state.last_failed_to}</code>" if state.last_failed_to else ""

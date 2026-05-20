@@ -212,25 +212,24 @@ def _release_single_instance_lock() -> None:
 
 def _log_mailing_env_once() -> None:
     from config import config
-    from services.sender import (
-        mailing_minimal_headers_enabled,
-        mailing_plain_only_enabled,
-        mailing_strip_link_enabled,
-    )
 
-    flags = []
-    if mailing_plain_only_enabled():
-        flags.append("MAILING_PLAIN_ONLY")
-    if mailing_minimal_headers_enabled():
-        flags.append("MAILING_MINIMAL_HEADERS")
-    if mailing_strip_link_enabled():
-        flags.append("MAILING_STRIP_LINK")
+    legacy = []
+    for name in (
+        "MAILING_PLAIN_ONLY",
+        "MAILING_MINIMAL_HEADERS",
+        "MAILING_STRIP_LINK",
+        "MAILING_FIXED_PRESET",
+        "SMTP_EHLO_HOSTNAME",
+        "MAILING_EHLO_NAME",
+    ):
+        if (os.getenv(name) or "").strip().lower() in ("1", "true", "yes", "on"):
+            legacy.append(name)
     subj = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "OFFER").strip()
-    logger.info("Mailing subject template: %r", subj)
-    if flags:
+    logger.info("Mailing subject template: %r (send path = happy88)", subj)
+    if legacy:
         logger.warning(
-            "⚠️ Railway env отличается от happy88 (инбокс хуже): %s — уберите или =0",
-            ", ".join(flags),
+            "⚠️ Устаревшие Railway Variables (игнорируются кодом, удалите): %s",
+            ", ".join(legacy),
         )
 
 
