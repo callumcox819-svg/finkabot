@@ -24,6 +24,7 @@ from services.offer_storage import offer_effective_title
 from services.placeholders import apply_placeholders
 from services.smtp_block_control import is_smtp_account_block_error, mark_account_smtp_blocked
 from services.smtp_delivery_verify import verify_message_in_sent
+from services.sender import mailing_plain_only_enabled
 from services.smtp_proxy_send import send_email_via_account_with_proxy
 from services.subject_offer import subject_for_offer
 from services.user_settings import get_user_setting, set_user_setting
@@ -305,6 +306,10 @@ async def _build_test_message(
         base_text = f"Hei! Onko tuote vielä myynnissä? {item_title}".strip()
 
     body = apply_placeholders(base_text, link=link, ctx=ctx)
+    from services.sender import ensure_plain_mail_body, mailing_plain_only_enabled
+
+    if mailing_plain_only_enabled():
+        body = ensure_plain_mail_body(body)
     subject = subject_for_offer(item_title)
     return subject, body, item_title
 
@@ -386,6 +391,7 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
                         to_email,
                         subject,
                         body,
+                        is_html=False if mailing_plain_only_enabled() else None,
                     )
 
                 acc_email = account.email

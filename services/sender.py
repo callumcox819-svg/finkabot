@@ -45,9 +45,35 @@ def _sanitize_header_line(value: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+_HTML_HINT_RE = re.compile(
+    r"<\s*(html|body|head|div|p|br|img|a|table|span|center|font)\b",
+    re.I,
+)
+
+
 def _looks_like_html(body: str) -> bool:
-    b = (body or "").lower()
-    return "<html" in b or "<body" in b or "</" in b
+    """Не считать HTML из-за случайного «</» в тексте — только явные теги."""
+    return bool(_HTML_HINT_RE.search(body or ""))
+
+
+def mailing_plain_only_enabled() -> bool:
+    """Рассылка /send и тест маил — только plain text (лучше для Inbox)."""
+    return (os.getenv("MAILING_PLAIN_ONLY", "1") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def ensure_plain_mail_body(body: str) -> str:
+    """Убрать HTML/картинки из тела перед массовой отправкой."""
+    b = (body or "").strip()
+    if not b:
+        return b
+    if _looks_like_html(b):
+        b = _strip_html(b)
+    return b
 
 
 def _smtp_host_port(provider: str, email: str) -> tuple[str, int]:

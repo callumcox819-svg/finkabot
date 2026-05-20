@@ -31,6 +31,7 @@ from services.placeholders import apply_placeholders
 from handlers.status import render_status_text, tg_answer_safe
 from services.sender import (
     SMTP_TIMEOUT_SEC,
+    mailing_plain_only_enabled,
     normalize_send_error,
     is_smtp_timeout_error,
 )
@@ -218,6 +219,10 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
             base_text = ("Hello! Is this item still available? " + (item_title or "OFFER")).strip()
 
     body = apply_placeholders(base_text, link=link, ctx=ctx)
+    from services.sender import ensure_plain_mail_body, mailing_plain_only_enabled
+
+    if mailing_plain_only_enabled():
+        body = ensure_plain_mail_body(body)
 
     # ==========================
     # Тема письма (глобально OFFER из config)
@@ -440,8 +445,8 @@ async def _notify_sending_finished(*, bot: Bot, chat_id: int, tg_user_id: int) -
         f"Ошибок отправки: <b>{failed}</b>\n"
         f"Email в очереди: <b>{pending}</b>"
         f"{inbox_hint}\n\n"
-        f"<i>Мало ответов? /imap_diag (отбои vs живые), приоритет доменов gmail/hotmail, "
-        f"VALIDEMAIL_STRICT=0 если очередь пустая. MAIL_VERIFY_SENT=1 — только реально ушедшие.</i>"
+        f"<i>Проверьте у получателя и папку <b>Спам</b>. "
+        f"Рассылка: plain text (MAILING_PLAIN_ONLY). /imap_diag — отбои vs ответы.</i>"
     )
     if failed > 0 and (state.last_error or "").strip() not in ("", "-"):
         who = f"\nПоследний адрес: <code>{state.last_failed_to}</code>" if state.last_failed_to else ""
@@ -633,10 +638,11 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 try:
                     subject, body = await _build_message_for_target(session, tg_user_id, tgt)
                     logger.info(
-                        "[mailing rotate] from=%s to=%s subject=%r",
+                        "[mailing rotate] from=%s to=%s subject=%r plain=%s",
                         acc.email,
                         to_addr,
                         (subject or "")[:60],
+                        mailing_plain_only_enabled(),
                     )
                     async with smtp_sem:
                         ok, err, _msgid = await asyncio.wait_for(
