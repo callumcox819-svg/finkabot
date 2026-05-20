@@ -64,8 +64,6 @@ def _smtp_local_hostname() -> str | None:
     )
     if custom:
         return custom
-    if _running_on_railway():
-        return "localhost"
     return None
 
 
@@ -108,8 +106,11 @@ _HTML_HINT_RE = re.compile(
 
 
 def _looks_like_html(body: str) -> bool:
-    """Не считать HTML из-за случайного «</» в тексте — только явные теги."""
-    return bool(_HTML_HINT_RE.search(body or ""))
+    """Как happy88 — иначе другое MIME при том же пресете."""
+    b = (body or "").lower()
+    if "<html" in b or "<body" in b or "</" in b:
+        return True
+    return bool(_HTML_HINT_RE.search(b))
 
 
 def _env_flag(name: str, *, default: str = "1") -> bool:
@@ -122,18 +123,15 @@ def _env_flag(name: str, *, default: str = "1") -> bool:
 
 
 def mailing_plain_only_enabled() -> bool:
-    """Рассылка /send и тест маил — только plain text."""
-    return _env_flag("MAILING_PLAIN_ONLY", default="1")
+    return _env_flag("MAILING_PLAIN_ONLY", default="0")
 
 
 def mailing_minimal_headers_enabled() -> bool:
-    """Как простой клиент: From=email, без Reply-To."""
-    return _env_flag("MAILING_MINIMAL_HEADERS", default="1")
+    return _env_flag("MAILING_MINIMAL_HEADERS", default="0")
 
 
 def mailing_strip_link_enabled() -> bool:
-    """Не подставлять {{LINK}} в рассылку (меньше триггеров фишинга)."""
-    return _env_flag("MAILING_STRIP_LINK", default="1")
+    return _env_flag("MAILING_STRIP_LINK", default="0")
 
 
 def ensure_plain_mail_body(body: str) -> str:
@@ -561,6 +559,18 @@ def _send_plain_sync(
         is_html=is_html,
         minimal_headers=use_minimal,
     )
+
+    if _env_flag("MAIL_DEBUG", default="0"):
+        try:
+            raw = msg.as_string()[:1200]
+            logger.info(
+                "[SMTP debug] %s -> %s\n%s",
+                account.email,
+                to_email,
+                raw,
+            )
+        except Exception:
+            pass
 
     tmo = float(smtp_timeout_sec if smtp_timeout_sec is not None else SMTP_TIMEOUT_SEC)
     _log_smtp_ehlo_once()

@@ -31,7 +31,6 @@ from services.placeholders import apply_placeholders
 from handlers.status import render_status_text, tg_answer_safe
 from services.sender import (
     SMTP_TIMEOUT_SEC,
-    mailing_plain_only_enabled,
     normalize_send_error,
     is_smtp_timeout_error,
 )
@@ -202,13 +201,13 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
         "IMAGE_URL": image_url,
     }
 
-    # Умные пресеты → иначе «Первые смс»
+    # Умные пресеты (случайный текст) → иначе «Первые смс» — как happy88
     base_text = ""
     try:
         from handlers.templates import pick_first_smart_preset, pick_random_smart_preset
         from services.sender import _env_flag
 
-        if _env_flag("MAILING_FIXED_PRESET", default="1"):
+        if _env_flag("MAILING_FIXED_PRESET", default="0"):
             base_text = await pick_first_smart_preset(tg_user_id, item_title)
         else:
             base_text = await pick_random_smart_preset(tg_user_id, item_title)
@@ -230,7 +229,6 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
 
     mail_link = "" if mailing_strip_link_enabled() else link
     body = apply_placeholders(base_text, link=mail_link, ctx=ctx)
-
     if mailing_plain_only_enabled():
         body = ensure_plain_mail_body(body)
 
@@ -648,11 +646,10 @@ async def _sending_loop(*, bot: Bot, chat_id: int, tg_user_id: int) -> None:
                 try:
                     subject, body = await _build_message_for_target(session, tg_user_id, tgt)
                     logger.info(
-                        "[mailing rotate] from=%s to=%s subject=%r plain=%s",
+                        "[mailing rotate] from=%s to=%s subject=%r",
                         acc.email,
                         to_addr,
                         (subject or "")[:60],
-                        mailing_plain_only_enabled(),
                     )
                     async with smtp_sem:
                         ok, err, _msgid = await asyncio.wait_for(
