@@ -10,11 +10,7 @@ from typing import Optional, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import EmailAccount
-from services.sender import (
-    mailing_plain_only_enabled,
-    normalize_send_error,
-    should_retry_send_with_other_proxy,
-)
+from services.sender import normalize_send_error, should_retry_send_with_other_proxy
 from services.smtp_delivery_verify import verify_message_in_sent
 from services.smtp_proxy_send import (
     MAIL_SMTP_MAX_PROXIES,
@@ -70,7 +66,6 @@ async def send_mailing_one(
             subject,
             body,
             sender_name=sender_name,
-            is_html=False if mailing_plain_only_enabled() else None,
         )
         err = normalize_send_error(err)
         last_err = err

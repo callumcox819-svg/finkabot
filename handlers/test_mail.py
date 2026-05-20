@@ -24,7 +24,6 @@ from services.offer_storage import offer_effective_title
 from services.placeholders import apply_placeholders
 from services.smtp_block_control import is_smtp_account_block_error, mark_account_smtp_blocked
 from services.smtp_delivery_verify import verify_message_in_sent
-from services.sender import mailing_plain_only_enabled
 from services.smtp_proxy_send import send_email_via_account_with_proxy
 from services.user_settings import get_user_setting, set_user_setting
 from sqlalchemy import func, select
@@ -37,6 +36,15 @@ EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 TEST_MAIL_RECIPIENTS_KEY = "test_mail_recipients"
 MAX_TEST_RECIPIENTS = 4
 TEST_SEND_DELAY_SEC = 2.0
+
+# Нейтральная тема для проверки доставки (как happy88), не финская рассылка
+TEST_SUBJECTS = [
+    "Test message – Order update",
+    "Test message – Please confirm",
+    "Test message – Action required",
+    "Test message – Status notification",
+    "Test message – Delivery check",
+]
 
 class TestMailStates(StatesGroup):
     waiting_recipients = State()
@@ -310,24 +318,12 @@ async def _build_test_message(
     if not (base_text or "").strip():
         base_text = f"Hei! Onko tuote vielä myynnissä? {item_title}".strip()
 
-    from services.sender import (
-        ensure_plain_mail_body,
-        mailing_plain_only_enabled,
-        mailing_strip_link_enabled,
-    )
-
-    mail_link = "" if mailing_strip_link_enabled() else link
-    body = apply_placeholders(base_text, link=mail_link, ctx=ctx)
+    body = apply_placeholders(base_text, link=link, ctx=ctx)
     from services.offer_text import trim_trailing_offer_title
 
     body = trim_trailing_offer_title(body, item_title)
 
-    if mailing_plain_only_enabled():
-        body = ensure_plain_mail_body(body)
-    from services.subject_offer import resolve_mailing_subject_template, subject_for_offer
-
-    subject_tpl = await resolve_mailing_subject_template(session, user)
-    subject = subject_for_offer(item_title, template=subject_tpl)
+    subject = random.choice(TEST_SUBJECTS)
     return subject, body, item_title
 
 
@@ -408,7 +404,6 @@ async def _run_mass_test(message: Message, tg_id: int) -> None:
                         to_email,
                         subject,
                         body,
-                        is_html=False if mailing_plain_only_enabled() else None,
                     )
 
                 acc_email = account.email

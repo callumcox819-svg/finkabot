@@ -221,25 +221,14 @@ async def _build_message_for_target(session: AsyncSession, tg_user_id: int, tgt:
         except Exception:
             base_text = ("Hello! Is this item still available? " + (item_title or "OFFER")).strip()
 
-    from services.sender import (
-        ensure_plain_mail_body,
-        mailing_plain_only_enabled,
-        mailing_strip_link_enabled,
-    )
-
-    mail_link = "" if mailing_strip_link_enabled() else link
-    body = apply_placeholders(base_text, link=mail_link, ctx=ctx)
+    body = apply_placeholders(base_text, link=link, ctx=ctx)
     from services.offer_text import trim_trailing_offer_title
 
     body = trim_trailing_offer_title(body, item_title)
-    if mailing_plain_only_enabled():
-        body = ensure_plain_mail_body(body)
 
-    # Тема: шаблон из ⚙️ Темы (по умолчанию Kysymys: OFFER)
-    from services.subject_offer import resolve_mailing_subject_template, subject_for_offer
+    from services.subject_offer import subject_for_offer
 
-    subject_tpl = await resolve_mailing_subject_template(session, user)
-    subject = subject_for_offer(item_title or "", template=subject_tpl)
+    subject = subject_for_offer(item_title or "")
 
     return subject, body
 

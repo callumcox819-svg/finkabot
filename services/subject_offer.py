@@ -29,8 +29,8 @@ MAILING_SUBJECT_PRESETS: tuple[tuple[str, str], ...] = (
 
 
 def global_subject_template() -> str:
-    tpl = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "Re: Tuotteen ostaminen OFFER").strip()
-    return tpl or "Re: Tuotteen ostaminen OFFER"
+    tpl = (getattr(config, "GLOBAL_SUBJECT_TEMPLATE", None) or "OFFER").strip()
+    return tpl or "OFFER"
 
 
 async def resolve_mailing_subject_template(session, user) -> str:

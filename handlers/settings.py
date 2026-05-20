@@ -739,11 +739,11 @@ async def themes_menu(callback: CallbackQuery, state: FSMContext):
     preview = render_subject_with_offer(cur_show, example_title)
     txt = (
         "📌 <b>Тема рассылки (/send)</b>\n\n"
-        "Глобально для <b>всех</b> (на сервере). "
+        "Глобально для <b>всех</b> (как happy88: по умолчанию только название товара).\n"
         "<code>OFFER</code> = название товара.\n\n"
         f"Шаблон: <code>{cur_show}</code>\n"
         f"Пример: <code>{preview}</code>\n\n"
-        "<i>Смена шаблона — только в Railway: GLOBAL_SUBJECT_TEMPLATE</i>"
+        "<i>Railway: GLOBAL_SUBJECT_TEMPLATE. Длинные финские Re:… хуже для инбокса.</i>"
     )
     await _safe_send(callback.message.edit_text(txt, reply_markup=kb, parse_mode="HTML"))
     await callback.answer()
