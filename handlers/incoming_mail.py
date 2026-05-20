@@ -1042,6 +1042,7 @@ async def _upsert_convlink(
     contact_email: str,
     ad_url: str | None = None,
     generated_link: str | None = None,
+    pinned_offer_id: int | None = None,
 ) -> None:
     """
     Обновить/создать запись ConversationLink.
@@ -1068,6 +1069,7 @@ async def _upsert_convlink(
             from_email=contact,
             ad_url=(ad_url or "").strip() or None,
             generated_link=(generated_link or "").strip() or None,
+            pinned_offer_id=int(pinned_offer_id) if pinned_offer_id else None,
         )
         session.add(conv)
     else:
@@ -1075,6 +1077,8 @@ async def _upsert_convlink(
             conv.ad_url = (ad_url or "").strip() or conv.ad_url
         if generated_link:
             conv.generated_link = (generated_link or "").strip() or conv.generated_link
+        if pinned_offer_id:
+            conv.pinned_offer_id = int(pinned_offer_id)
     await session.commit()
 
 
@@ -1407,6 +1411,7 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
             body_text=body_mail,
             resolved_offer_id=getattr(mail, "resolved_offer_id", None),
             mail_ad_url=(getattr(mail, "ad_url", "") or "").strip() or None,
+            inbox_email=inbox_email,
         )
 
         if not url:
@@ -1415,9 +1420,8 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
                 "❌ <b>Не нашёл объявление для этого письма</b>\n\n"
                 f"<b>Тема:</b> <code>{_e(subj_hint or '—')}</code>\n"
                 f"<b>От:</b> <code>{_e(contact_email) or '—'}</code>\n\n"
-                "Старый диалог и «последний лот по email» <b>не</b> подставляются.\n"
-                "Добавьте в БД оффер с такой темой/названием и ссылкой tori/posti, "
-                "или откройте письмо с однозначной темой Re: …",
+                "Загрузите JSON с этим лотом, провалидируйте email продавца "
+                "(поле <code>item_link</code> — ссылка tori/posti), затем снова «Создать ссылку».",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
@@ -1462,14 +1466,12 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
             contact_email=contact_email,
             ad_url=url,
             generated_link=aqua_url,
+            pinned_offer_id=offer_id,
         )
-        try:
-            mail.generated_link = aqua_url
-            if offer_id:
-                mail.resolved_offer_id = int(offer_id)
-            mail.ad_url = url
-        except Exception:
-            pass
+        mail.generated_link = aqua_url
+        if offer_id:
+            mail.resolved_offer_id = int(offer_id)
+        mail.ad_url = url
         await session.commit()
 
         mail_uid = str(getattr(mail, "imap_uid", "") or "")
@@ -1558,6 +1560,7 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
             body_text=body_pre,
             resolved_offer_id=getattr(mail_pre, "resolved_offer_id", None) if mail_pre else None,
             mail_ad_url=(getattr(mail_pre, "ad_url", "") or "").strip() if mail_pre else None,
+            inbox_email=inbox_email,
         )
 
         if not url:
@@ -1566,7 +1569,7 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
                 "❌ <b>Не нашёл объявление для этого письма</b>\n\n"
                 f"<b>Тема:</b> <code>{_e(subj_hint or '—')}</code>\n"
                 f"<b>От:</b> <code>{_e(contact_email) or '—'}</code>\n\n"
-                "Старый диалог и «последний лот по email» <b>не</b> подставляются.",
+                "Загрузите JSON с этим лотом и провалидируйте email (<code>item_link</code>).",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
@@ -1617,15 +1620,13 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
             contact_email=contact_email,
             ad_url=url,
             generated_link=aqua_url,
+            pinned_offer_id=offer_id,
         )
         if mail:
-            try:
-                mail.generated_link = aqua_url
-                if offer_id:
-                    mail.resolved_offer_id = int(offer_id)
-                mail.ad_url = url
-            except Exception:
-                pass
+            mail.generated_link = aqua_url
+            if offer_id:
+                mail.resolved_offer_id = int(offer_id)
+            mail.ad_url = url
         await session.commit()
 
         inbox_label = (getattr(user, "sender_name", None) or "").strip()

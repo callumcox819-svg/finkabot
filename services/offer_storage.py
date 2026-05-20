@@ -115,8 +115,19 @@ def offer_effective_title(offer: Offer | None) -> str:
     )
 
 
+def offer_effective_link(offer: Offer | None) -> str:
+    """Ссылка tori/posti: Offer.link, иначе item_link/link из raw_json."""
+    if not offer:
+        return ""
+    link = str(getattr(offer, "link", None) or "").strip()
+    if link:
+        return link
+    raw = parse_offer_raw(getattr(offer, "raw_json", None))
+    return _first_raw_str(raw, ("item_link", "link", "url", "ad_url"))
+
+
 async def find_offer_by_link(session, *, user_id: int, ad_url: str) -> Offer | None:
-    """Offer по ссылке объявления (нормализованный link_key)."""
+    """Offer по ссылке объявления (колонка link или item_link в raw_json)."""
     lk = link_key(ad_url)
     if not lk:
         return None
@@ -124,15 +135,23 @@ async def find_offer_by_link(session, *, user_id: int, ad_url: str) -> Offer | N
         await session.execute(
             sa_select(Offer)
             .where(Offer.user_id == int(user_id))
-            .where(Offer.link.is_not(None))
             .order_by(Offer.id.desc())
             .limit(800)
         )
     ).scalars().all()
     for off in rows:
-        if link_key(str(off.link or "")) == lk:
+        if link_key(offer_effective_link(off)) == lk:
             return off
     return None
+
+
+def ensure_offer_link_column(offer: Offer | None, listing_url: str) -> None:
+    """Дублируем item_link в Offer.link — find_offer_by_link и IMAP видят ссылку."""
+    if not offer:
+        return
+    url = (listing_url or "").strip()
+    if url and not str(getattr(offer, "link", None) or "").strip():
+        offer.link = url
 
 
 def offer_effective_photo(offer: Offer | None) -> str:
@@ -236,6 +255,8 @@ async def save_all_offers_from_import(
         )
         session.add(offer)
         await session.flush()
+        if fields["link"]:
+            ensure_offer_link_column(offer, fields["link"])
         offers_saved += 1
 
         if picked:
