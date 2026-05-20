@@ -36,8 +36,8 @@ class Config:
         VALIDEMAIL_API_KEYS = [k for k in (VALIDEMAIL_API_KEY_1, VALIDEMAIL_API_KEY_2) if k]
     VALIDEMAIL_CONCURRENCY = int(os.getenv("VALIDEMAIL_CONCURRENCY", "12"))
 
-    # Тема = название объявления (лучше для tori.fi, чем префикс OFFER)
-    GLOBAL_SUBJECT_TEMPLATE = os.getenv("GLOBAL_SUBJECT_TEMPLATE", "{{OFFER}}").strip() or "{{OFFER}}"
+    # Тема рассылки — как happy88: OFFER → название товара
+    GLOBAL_SUBJECT_TEMPLATE = os.getenv("GLOBAL_SUBJECT_TEMPLATE", "OFFER").strip() or "OFFER"
 
     # AQUA / GOO NETWORK (Финляндия) — команда AQUA на legacy-хосте api-old.goo.network
     GOO_API_BASE = os.getenv("GOO_API_BASE", "https://api-old.goo.network").strip().rstrip("/")
