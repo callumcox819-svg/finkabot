@@ -18,6 +18,7 @@ SUBJECT_TEMPLATE_SETTING = "subject_template"
 
 # Готовые шаблоны (⚙️ → Темы): OFFER = название объявления (фин. текст в теме)
 MAILING_SUBJECT_PRESETS: tuple[tuple[str, str], ...] = (
+    ("osto_tuote", "Re: Tuotteen ostaminen OFFER"),
     ("kysymys", "Kysymys: OFFER"),
     ("tuote", "Tuote: OFFER"),
     ("osto", "Osto: OFFER"),
