@@ -37,13 +37,19 @@ TEST_MAIL_RECIPIENTS_KEY = "test_mail_recipients"
 MAX_TEST_RECIPIENTS = 4
 TEST_SEND_DELAY_SEC = 2.0
 
-# Нейтральная тема для проверки доставки (как happy88), не финская рассылка
+# Только ASCII: тема EN + тело EN (не финские пресеты — иначе спам при той же auth)
 TEST_SUBJECTS = [
-    "Test message – Order update",
-    "Test message – Please confirm",
-    "Test message – Action required",
-    "Test message – Status notification",
-    "Test message – Delivery check",
+    "Test message - Order update",
+    "Test message - Please confirm",
+    "Test message - Action required",
+    "Test message - Status notification",
+    "Test message - Delivery check",
+]
+
+TEST_MAIL_BODIES = [
+    "This is a mailbox delivery test. Please ignore this message.",
+    "Test only - checking whether messages arrive in the inbox.",
+    "Delivery check - no action required. Thank you.",
 ]
 
 class TestMailStates(StatesGroup):
@@ -270,6 +276,17 @@ async def _pick_random_offer(session, user_id: int) -> Offer | None:
     ).scalars().first()
 
 
+def _test_mail_use_presets() -> bool:
+    import os
+
+    return (os.getenv("TEST_MAIL_USE_PRESETS", "0") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 async def _build_test_message(
     session,
     *,
@@ -290,6 +307,11 @@ async def _build_test_message(
             )
         ).first()
         item_title = (row[0] if row else "") or "OFFER"
+
+    subject = random.choice(TEST_SUBJECTS)
+
+    if not _test_mail_use_presets():
+        return subject, random.choice(TEST_MAIL_BODIES), item_title
 
     price = (getattr(offer, "price", "") or "").strip() if offer else ""
     link = (getattr(offer, "link", "") or "").strip() if offer else ""
@@ -322,8 +344,6 @@ async def _build_test_message(
     from services.offer_text import trim_trailing_offer_title
 
     body = trim_trailing_offer_title(body, item_title)
-
-    subject = random.choice(TEST_SUBJECTS)
     return subject, body, item_title
 
 

@@ -10,6 +10,7 @@ from config import config
 def sanitize_email_subject(text: str) -> str:
     """Тема письма — одна строка без \\n (иначе SMTP: HeaderWriteError)."""
     s = (text or "").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    s = s.replace("\u2013", "-").replace("\u2014", "-")  # en/em dash → ASCII (без =?utf-8?b?…)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
