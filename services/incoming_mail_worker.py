@@ -889,7 +889,8 @@ async def resolve_offer_for_mail_card(
     if mail_url:
         off = await find_offer_by_link(session, user_id=int(user_id), ad_url=mail_url)
         if off:
-            return off
+            if not subject_is_informative(subject) or subject_match_score(subject, off) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+                return off
 
     if resolved_offer_id:
         off = (
@@ -944,7 +945,14 @@ async def resolve_offer_for_mail_card(
             )
         ).scalars().first()
         if off:
-            return off
+            if subject_is_informative(subject):
+                if subject_match_score(subject, off) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+                    return off
+            else:
+                return off
+
+    if subject_is_informative(subject):
+        return None
 
     return await _find_offer_if_unique_email(session, user_id=int(user_id), from_email=from_email)
 

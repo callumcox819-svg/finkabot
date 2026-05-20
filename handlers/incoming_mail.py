@@ -47,7 +47,12 @@ from services.incoming_mail_worker import (
     build_mail_card_from_mail,
     resolve_offer_for_mail_card,
 )
-from services.offer_matching import finalize_aqua_listing_context, resolve_offer_for_incoming
+from services.offer_matching import (
+    finalize_aqua_listing_context,
+    product_title_from_subject,
+    resolve_offer_for_aqua_link,
+    subject_is_informative,
+)
 from services.offer_storage import offer_effective_photo, offer_effective_price, offer_effective_title
 from services.smtp_proxy_send import send_email_via_account_with_proxy
 from services.translate import translate_to_ru, _strip_html
@@ -1372,133 +1377,36 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
         inbox_email = _canon_email(mail.account_email or "")
         contact_email = _canon_email(mail.from_email or "")
 
-        # Сначала оффер по теме письма (не «последний лот» продавца)
-        offer = await resolve_offer_for_mail_card(
+        subj_mail = (getattr(mail, "subject", "") or "").strip()
+        body_mail = (getattr(mail, "body", "") or "").strip()
+        offer, url = await resolve_offer_for_aqua_link(
             session,
             user_id=int(tg_user.id),
             from_email=contact_email,
-            resolved_offer_id=getattr(mail, "resolved_offer_id", None),
-            ad_url=(getattr(mail, "ad_url", "") or "").strip() or None,
-            inbox_email=inbox_email,
-            subject=(getattr(mail, "subject", "") or ""),
+            subject=subj_mail,
             from_name=(getattr(mail, "from_name", "") or ""),
-            body_text=(getattr(mail, "body", "") or ""),
+            body_text=body_mail,
+            resolved_offer_id=getattr(mail, "resolved_offer_id", None),
+            mail_ad_url=(getattr(mail, "ad_url", "") or "").strip() or None,
         )
-        if offer:
-            mail.resolved_offer_id = int(offer.id)
-
-        # Resolve url (ad_url) строго из БД (по ТЗ: не ищем ссылку в теле письма)
-        delays = [0.0, 0.6, 1.2, 2.0]
-        url = (offer.link or "").strip() if offer else ""
-        reasons: list[str] = []
-
-        for d in delays:
-            if d:
-                await asyncio.sleep(d)
-            reasons = []
-
-            # 1) incoming_mails.ad_url (самый точный источник по конкретному письму)
-            url = (getattr(mail, "ad_url", "") or "").strip()
-            if url:
-                break
-            reasons.append("incoming_mails.ad_url пустой")
-
-            # 2) linked Offer (preferred)
-            if getattr(mail, "resolved_offer_id", None):
-                off_link = (
-                    await session.execute(
-                        sa_select(Offer.link)
-                        .where(Offer.id == int(mail.resolved_offer_id))
-                        .where(Offer.user_id == int(tg_user.id))
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if off_link and str(off_link).strip():
-                    url = str(off_link).strip()
-                    break
-                reasons.append("resolved_offer_id есть, но Offer.link пустой")
-            else:
-                reasons.append("resolved_offer_id не найден")
-
-            # 3) existing convlink
-            conv = await _get_convlink(
-                session,
-                user_id=int(tg_user.id),
-                inbox_email=inbox_email,
-                contact_email=contact_email,
-            )
-            if conv and conv.ad_url and str(conv.ad_url).strip():
-                conv_url = str(conv.ad_url).strip()
-                subj_chk = (getattr(mail, "subject", "") or "").strip()
-                from services.offer_matching import (
-                    _CONV_AD_URL_MIN_SUBJECT_SCORE,
-                    subject_is_informative,
-                    subject_match_score,
-                )
-                from services.offer_storage import find_offer_by_link
-
-                off_conv = await find_offer_by_link(
-                    session, user_id=int(tg_user.id), ad_url=conv_url
-                )
-                if off_conv and subject_is_informative(subj_chk):
-                    if subject_match_score(subj_chk, off_conv) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
-                        url = conv_url
-                        break
-                    reasons.append("conversation_links: тема письма ≠ старый лот")
-                else:
-                    url = conv_url
-                    break
-            reasons.append("conversation_links.ad_url пустой/нет")
-
-            # 4) Offer.link by sender email (OfferEmail)
-            url = (await _offer_link_by_sender_email(session, int(tg_user.id), contact_email)) or ""
-            if url.strip():
-                url = url.strip()
-                break
-            reasons.append("не найден Offer.link по OfferEmail")
-
-            # 5) поиск по title / price / имени / raw_json (все поля из парсера)
-            oid, _ = await resolve_offer_for_incoming(
-                session,
-                user_id=int(tg_user.id),
-                from_email=contact_email,
-                subject=(getattr(mail, "subject", "") or ""),
-                from_name=(getattr(mail, "from_name", "") or ""),
-                body_text=(getattr(mail, "body", "") or ""),
-            )
-            if oid:
-                off_link = (
-                    await session.execute(
-                        sa_select(Offer.link)
-                        .where(Offer.id == int(oid))
-                        .where(Offer.user_id == int(tg_user.id))
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                if off_link and str(off_link).strip():
-                    url = str(off_link).strip()
-                    if not mail.resolved_offer_id:
-                        mail.resolved_offer_id = int(oid)
-                        await session.commit()
-                    break
-            reasons.append("не найден Offer по title/price/имени")
 
         if not url:
-            reason_text = "\n".join([f"• { _e(r) }" for r in (reasons or ["не удалось получить ссылку из БД"])])
+            subj_hint = product_title_from_subject(subj_mail) if subject_is_informative(subj_mail) else subj_mail
             await callback.message.answer(
-                "❌ <b>Не нашёл ссылку на объявление (ad_url)</b>\n\n"
-                f"<b>from_email:</b> <code>{_e(contact_email) or '—'}</code>\n"
-                f"<b>inbox:</b> <code>{_e(inbox_email) or '—'}</code>\n\n"
-                "<b>Причины:</b>\n"
-                f"{reason_text}\n\n"
-                "По ТЗ ссылка берётся только из БД (Offer/OfferEmail/ConversationLink).",
+                "❌ <b>Не нашёл объявление для этого письма</b>\n\n"
+                f"<b>Тема:</b> <code>{_e(subj_hint or '—')}</code>\n"
+                f"<b>От:</b> <code>{_e(contact_email) or '—'}</code>\n\n"
+                "Старый диалог и «последний лот по email» <b>не</b> подставляются.\n"
+                "Добавьте в БД оффер с такой темой/названием и ссылкой tori/posti, "
+                "или откройте письмо с однозначной темой Re: …",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
             await callback.answer()
             return
 
-        subj_mail = (getattr(mail, "subject", "") or "").strip()
+        if offer:
+            mail.resolved_offer_id = int(offer.id)
         offer, url, title, price, offer_image = await finalize_aqua_listing_context(
             session,
             user_id=int(tg_user.id),
@@ -1603,98 +1511,6 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
     inbox_email = _canon_email((meta.get("account_email") or ""))
     contact_email = _canon_email((meta.get("from_email") or ""))
 
-    async def _get_ad_url_db_with_retries(session, *, owner_user_id: int) -> tuple[str, list[str]]:
-        """Стабильно получаем ad_url ТОЛЬКО из БД (по ТЗ), с ретраями и причинами."""
-
-        delays = [0.0, 0.6, 1.2, 2.0]
-        last_reasons: list[str] = []
-
-        for i, d in enumerate(delays, start=1):
-            if d:
-                await asyncio.sleep(d)
-
-            reasons: list[str] = []
-            url: str = ""
-
-            # 1) url из meta (если уже был записан ранее)
-            url = (meta.get("ad_url") or "").strip()
-            if url:
-                return url, []
-            reasons.append("meta.ad_url пустой")
-
-            # 2) url из IncomingMail (самый надёжный источник по конкретному письму)
-            mail = (
-                await session.execute(
-                    sa_select(IncomingMail)
-                    .where(IncomingMail.account_id == int(acc_id))
-                    .where(IncomingMail.imap_uid == int(uid))
-                    .where(IncomingMail.user_id == int(owner_user_id))
-                    .limit(1)
-                )
-            ).scalars().first()
-            if mail:
-                m_url = (getattr(mail, "ad_url", "") or "").strip()
-                if m_url:
-                    return m_url, []
-                reasons.append("incoming_mails.ad_url пустой")
-
-                # 2.1) если письмо уже связано с Offer — берём Offer.link
-                roid = getattr(mail, "resolved_offer_id", None)
-                if roid:
-                    off_link = (
-                        await session.execute(
-                            sa_select(Offer.link)
-                            .where(Offer.id == int(roid))
-                            .where(Offer.user_id == int(owner_user_id))
-                            .limit(1)
-                        )
-                    ).scalar_one_or_none()
-                    if off_link and str(off_link).strip():
-                        return str(off_link).strip(), []
-                    reasons.append("resolved_offer_id есть, но Offer.link пустой")
-                else:
-                    reasons.append("resolved_offer_id не найден")
-            else:
-                reasons.append("incoming_mails запись не найдена")
-
-            # 3) url из conversation_links
-            conv = await _get_convlink(
-                session,
-                user_id=owner_user_id,
-                inbox_email=inbox_email,
-                contact_email=contact_email,
-            )
-            if conv and conv.ad_url and str(conv.ad_url).strip():
-                conv_url = str(conv.ad_url).strip()
-                subj_chk = (meta.get("subject") or "").strip()
-                from services.offer_matching import (
-                    _CONV_AD_URL_MIN_SUBJECT_SCORE,
-                    subject_is_informative,
-                    subject_match_score,
-                )
-                from services.offer_storage import find_offer_by_link
-
-                off_conv = await find_offer_by_link(
-                    session, user_id=int(owner_user_id), ad_url=conv_url
-                )
-                if off_conv and subject_is_informative(subj_chk):
-                    if subject_match_score(subj_chk, off_conv) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
-                        return conv_url, []
-                    reasons.append("conversation_links: тема письма ≠ старый лот в диалоге")
-                else:
-                    return conv_url, []
-            reasons.append("conversation_links.ad_url пустой/нет")
-
-            # 4) url из Offer.link по OfferEmail (валидированные данные в БД)
-            off_by_email = (await _offer_link_by_sender_email(session, owner_user_id, contact_email)) or ""
-            if off_by_email.strip():
-                return off_by_email.strip(), []
-            reasons.append("не найден Offer.link по OfferEmail")
-
-            last_reasons = reasons
-
-        return "", last_reasons
-
     async with Session() as session:
         owner_user_id = await _get_acc_owner_user_id(session, acc_id)
         if not owner_user_id:
@@ -1711,49 +1527,41 @@ async def _create_aqua_link_work(callback: CallbackQuery, acc_id: int, uid: str,
         ).scalars().first()
 
         subj_pre = (getattr(mail_pre, "subject", "") or meta.get("subject") or "").strip()
-        offer_pre = await resolve_offer_for_mail_card(
+        body_pre = (getattr(mail_pre, "body", "") or "").strip() if mail_pre else ""
+        offer, url = await resolve_offer_for_aqua_link(
             session,
             user_id=int(owner_user_id),
             from_email=contact_email,
-            resolved_offer_id=getattr(mail_pre, "resolved_offer_id", None) if mail_pre else None,
-            ad_url=(getattr(mail_pre, "ad_url", "") or "").strip() if mail_pre else None,
-            inbox_email=inbox_email,
             subject=subj_pre,
             from_name=(getattr(mail_pre, "from_name", "") or meta.get("from_name") or "").strip(),
-            body_text=(getattr(mail_pre, "body", "") or "").strip() if mail_pre else "",
+            body_text=body_pre,
+            resolved_offer_id=getattr(mail_pre, "resolved_offer_id", None) if mail_pre else None,
+            mail_ad_url=(getattr(mail_pre, "ad_url", "") or "").strip() if mail_pre else None,
         )
-        if offer_pre and mail_pre:
-            mail_pre.resolved_offer_id = int(offer_pre.id)
-
-        url = (offer_pre.link or "").strip() if offer_pre else ""
-        if not url:
-            url, reasons = await _get_ad_url_db_with_retries(session, owner_user_id=owner_user_id)
-        else:
-            reasons = []
 
         if not url:
-            reason_text = "\n".join([f"• { _e(r) }" for r in (reasons or ["не удалось получить ссылку из БД"])])
+            subj_hint = product_title_from_subject(subj_pre) if subject_is_informative(subj_pre) else subj_pre
             await callback.message.answer(
-                "❌ <b>Не нашёл ссылку на объявление (ad_url)</b>\n\n"
-                f"<b>from_email:</b> <code>{_e(contact_email) or '—'}</code>\n"
-                f"<b>inbox:</b> <code>{_e(inbox_email) or '—'}</code>\n\n"
-                "<b>Причины:</b>\n"
-                f"{reason_text}\n\n"
-                "По ТЗ ссылка берётся только из БД (Offer/OfferEmail/ConversationLink).",
+                "❌ <b>Не нашёл объявление для этого письма</b>\n\n"
+                f"<b>Тема:</b> <code>{_e(subj_hint or '—')}</code>\n"
+                f"<b>От:</b> <code>{_e(contact_email) or '—'}</code>\n\n"
+                "Старый диалог и «последний лот по email» <b>не</b> подставляются.",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
             )
-            await callback.answer()
-            return
+            return await callback.answer()
 
         user = await get_or_create_user(session, int(callback.from_user.id))
 
         mail = mail_pre
+        if mail and offer:
+            mail.resolved_offer_id = int(offer.id)
+
         offer, url, title, price, offer_image = await finalize_aqua_listing_context(
             session,
             user_id=int(owner_user_id),
             listing_url=url,
-            offer=offer_pre,
+            offer=offer,
             subject=subj_pre,
         )
         offer_id = int(offer.id) if offer else None

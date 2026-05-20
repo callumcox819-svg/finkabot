@@ -410,6 +410,93 @@ async def finalize_aqua_listing_context(
     return offer, url, title.strip(), price, image
 
 
+_AQUA_SUBJECT_MIN_SCORE = 35.0
+
+
+async def resolve_offer_for_aqua_link(
+    session,
+    *,
+    user_id: int,
+    from_email: str,
+    subject: str,
+    from_name: str = "",
+    body_text: str = "",
+    resolved_offer_id: int | None = None,
+    mail_ad_url: str | None = None,
+) -> tuple[Offer | None, str]:
+    """
+    Кнопка «Создать ссылку»: один лот = тема этого письма.
+    Без conversation_links и без «последний Offer по email».
+    """
+    from services.offer_storage import find_offer_by_link
+
+    subj = (subject or "").strip()
+    fe = (from_email or "").strip()
+
+    if subject_is_informative(subj):
+        for fn in (resolve_best_offer_by_subject, resolve_best_offer_by_subject_global):
+            off = await fn(
+                session,
+                user_id=int(user_id),
+                from_email=fe,
+                subject=subj,
+                from_name=from_name,
+                body_text=body_text,
+            )
+            if not off:
+                continue
+            link = (off.link or "").strip()
+            if link and subject_match_score(subj, off) >= _AQUA_SUBJECT_MIN_SCORE:
+                return off, link
+
+        oid, _ = await resolve_offer_for_incoming(
+            session,
+            user_id=int(user_id),
+            from_email=fe,
+            subject=subj,
+            from_name=from_name,
+            body_text=body_text,
+        )
+        if oid:
+            off = (
+                await session.execute(
+                    sa_select(Offer)
+                    .where(Offer.id == int(oid))
+                    .where(Offer.user_id == int(user_id))
+                    .limit(1)
+                )
+            ).scalars().first()
+            if off and (off.link or "").strip():
+                if subject_match_score(subj, off) >= _CONV_AD_URL_MIN_SUBJECT_SCORE:
+                    return off, (off.link or "").strip()
+
+        return None, ""
+
+    if resolved_offer_id:
+        off = (
+            await session.execute(
+                sa_select(Offer)
+                .where(Offer.id == int(resolved_offer_id))
+                .where(Offer.user_id == int(user_id))
+                .limit(1)
+            )
+        ).scalars().first()
+        if off and (off.link or "").strip():
+            return off, (off.link or "").strip()
+
+    murl = (mail_ad_url or "").strip()
+    if murl:
+        off = await find_offer_by_link(session, user_id=int(user_id), ad_url=murl)
+        if off and (off.link or "").strip():
+            return off, murl
+
+    seller_offers = await list_offers_for_seller_email(session, user_id=int(user_id), from_email=fe)
+    if len(seller_offers) == 1 and (seller_offers[0].link or "").strip():
+        return seller_offers[0], (seller_offers[0].link or "").strip()
+
+    return None, ""
+
+
 async def list_offers_for_seller_email(
     session,
     *,
