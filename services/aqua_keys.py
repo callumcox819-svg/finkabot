@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
 from config import config
 from models import User
 from services.user_settings import get_user_setting, set_user_setting
+from utils.secrets import clean_secret
 
 AQUA_SERVICE_KEY = "aqua_service"
 
@@ -67,26 +70,39 @@ async def get_user_aqua_service(session, user: User) -> str:
     return normalize_aqua_service(raw) or ""
 
 
+def normalize_aqua_api_key(value: str | None) -> str:
+    """UUID / ключ без пробелов; убирает префикс Apikey если вставили целиком."""
+    v = clean_secret(value)
+    if not v:
+        return ""
+    low = v.lower()
+    if low.startswith("apikey"):
+        v = v[6:].lstrip(":").strip()
+    return v
+
+
 def get_global_aqua_team_key() -> str:
-    """Ключ команды AQUA — из переменной окружения AQUA_TEAM_API_KEY."""
-    return (getattr(config, "AQUA_TEAM_API_KEY", None) or "").strip()
+    """Ключ команды AQUA — глобально из AQUA_TEAM_API_KEY (Railway Variables)."""
+    raw = (os.getenv("AQUA_TEAM_API_KEY") or getattr(config, "AQUA_TEAM_API_KEY", None) or "")
+    raw = str(raw).strip().strip('"').strip("'")
+    return normalize_aqua_api_key(raw)
 
 
 def get_user_aqua_user_key(user: User) -> str:
-    return (getattr(user, "goo_user_api_key_aqua", None) or "").strip()
+    return normalize_aqua_api_key(getattr(user, "goo_user_api_key_aqua", None))
 
 
 async def get_user_aqua_user_key_async(session, user: User) -> str:
     user_key = get_user_aqua_user_key(user)
     if not user_key:
-        user_key = (
+        user_key = normalize_aqua_api_key(
             await get_user_setting(session, user, AQUA_USER_API_KEY_SETTING) or ""
-        ).strip()
+        )
     return user_key
 
 
 async def get_user_aqua_api_keys_async(session, user: User) -> tuple[str, str]:
-    """(user_api_key, team_api_key) — team всегда глобальный."""
+    """(user_api_key, team_api_key) — team всегда глобальный с сервера."""
     user_key = await get_user_aqua_user_key_async(session, user)
     return user_key, get_global_aqua_team_key()
 

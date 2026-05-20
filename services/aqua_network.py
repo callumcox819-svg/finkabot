@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 import aiohttp
 
 from config import config
+from services.aqua_keys import normalize_aqua_api_key
+
+logger = logging.getLogger(__name__)
 
 
 class AquaError(Exception):
@@ -19,10 +23,15 @@ def _api_base() -> str:
 
 
 def _auth_header(user_api_key: str) -> str:
-    key = (user_api_key or "").strip()
-    if key.lower().startswith("apikey "):
-        return key
+    key = normalize_aqua_api_key(user_api_key)
+    if not key:
+        return "Apikey "
     return f"Apikey {key}"
+
+
+def _is_auth_error(exc: AquaError) -> bool:
+    s = str(exc).lower()
+    return "http 401" in s or "http 403" in s or "invalid credentials" in s
 
 
 def price_to_api_number(price: str | float | int | None) -> float:
@@ -52,8 +61,8 @@ async def _post_generate(
     body: dict[str, Any],
     timeout_sec: float = 30.0,
 ) -> str:
-    user_key = (user_api_key or "").strip()
-    team_key = (team_api_key or "").strip()
+    user_key = normalize_aqua_api_key(user_api_key)
+    team_key = normalize_aqua_api_key(team_api_key)
     if not user_key:
         raise AquaError("Не задан User API key (AQUA)")
     if not team_key:
@@ -78,7 +87,22 @@ async def _post_generate(
                 msg = ""
                 if isinstance(data, dict):
                     msg = str(data.get("message") or data.get("error") or "")
-                raise AquaError(f"HTTP {resp.status}: {msg or text[:300]}")
+                err = AquaError(f"HTTP {resp.status}: {msg or text[:300]}")
+                if resp.status in (401, 403):
+                    logger.warning(
+                        "AQUA auth failed %s %s (user_key=%s… team_key=%s…)",
+                        resp.status,
+                        path,
+                        user_key[:8],
+                        team_key[:8],
+                    )
+                    raise AquaError(
+                        f"HTTP {resp.status}: {msg or 'invalid credentials'}\n\n"
+                        "Проверь: личный ключ в ⚙️→🔑 (поле «Ключ», не «Ключ команды»), "
+                        "на Railway — AQUA_TEAM_API_KEY («Ключ команды»). "
+                        "Оба из бота AQUA → Инструменты → Генерация ссылок."
+                    ) from err
+                raise err
             if not isinstance(data, dict):
                 raise AquaError(f"Bad JSON: {text[:300]}")
             if not data.get("status"):
@@ -198,8 +222,8 @@ async def generate_aqua_link(
                 balance_checker=balance_checker,
                 timeout_sec=timeout_sec,
             )
-        except AquaError:
-            if not (name or "").strip() or price is None:
+        except AquaError as e:
+            if _is_auth_error(e) or not (name or "").strip() or price is None:
                 raise
     resolved_img = (image or "").strip()
     if not resolved_img.lower().startswith(("http://", "https://")):

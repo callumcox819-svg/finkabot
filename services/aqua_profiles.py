@@ -9,6 +9,7 @@ from typing import Any
 import aiohttp
 
 from config import config
+from services.aqua_keys import normalize_aqua_api_key
 from services.aqua_network import AquaError, _api_base, _auth_header
 
 
@@ -129,8 +130,8 @@ async def fetch_aqua_team_profiles(
     timeout_sec: float = 30.0,
 ) -> list[AquaProfile]:
     """Список готовых профилей команды из GOO (как в боте AQUA)."""
-    user_key = (user_api_key or "").strip()
-    team_key = (team_api_key or "").strip()
+    user_key = normalize_aqua_api_key(user_api_key)
+    team_key = normalize_aqua_api_key(team_api_key)
     if not user_key:
         raise AquaError("Не задан личный API key")
     if not team_key:
