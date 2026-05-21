@@ -2080,8 +2080,13 @@ async def cb_mail_reply_preset_send(callback: CallbackQuery, state: FSMContext):
 
 
 def _reply_subject(subject: str) -> str:
-    subj_norm = re.sub(r"^(re|aw|fw|fwd)\s*:\s*", "", (subject or ""), flags=re.I).strip()
-    return f"Re: {subj_norm}" if subj_norm else "Re:"
+    from services.subject_offer import sanitize_email_subject
+
+    subj_norm = sanitize_email_subject(
+        re.sub(r"^(re|aw|fw|fwd)\s*:\s*", "", (subject or ""), flags=re.I)
+    )
+    out = f"Re: {subj_norm}" if subj_norm else "Re:"
+    return sanitize_email_subject(out)
 
 
 def _html_attachment_filename(subject: str) -> str:

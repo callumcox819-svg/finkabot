@@ -55,14 +55,12 @@ def _safe_re_subject(subject: str) -> str:
 
 
 def _render_subject_with_offer(subject_template: str, offer_title: str) -> str:
-    tpl = (subject_template or "").strip() or "Re: OFFER"
-    offer_value = (offer_title or "").strip() or "OFFER"
-    out = tpl.replace("{{OFFER}}", offer_value).replace("OFFER", offer_value).strip()
-    if not out:
-        out = offer_value
-    if len(out) > 140:
-        out = out[:137] + "…"
-    return out
+    from services.subject_offer import render_subject_with_offer
+
+    return render_subject_with_offer(
+        (subject_template or "").strip() or "Re: OFFER",
+        (offer_title or "").strip() or "OFFER",
+    )
 
 
 def _parse_uid(uid: str) -> int | None:

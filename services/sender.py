@@ -46,6 +46,11 @@ def _sanitize_header_line(value: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def _sanitize_email_addr(value: str) -> str:
+    """Адрес в To/From — без \\n (иначе ValueError при send_message)."""
+    return (value or "").replace("\r", "").replace("\n", "").strip()
+
+
 def _looks_like_html(body: str) -> bool:
     """Как happy88 — иначе другое MIME при том же пресете."""
     b = (body or "").lower()
@@ -117,6 +122,9 @@ def _build_message(
     is_html: Optional[bool] = None,
 ):
     subj = _sanitize_header_line(subject or "")
+    to_addr = _sanitize_email_addr(to_email)
+    from_addr = _sanitize_email_addr(from_email)
+    disp_name = _sanitize_header_line(sender_name) if sender_name else None
     b = body or ""
 
     # Some call sites explicitly request HTML sending (legacy compatibility).
@@ -129,32 +137,32 @@ def _build_message(
         plain = _strip_html(b) or " "
         msg.attach(MIMEText(plain, "plain", "utf-8"))
         msg.attach(MIMEText(b, "html", "utf-8"))
-        if sender_name:
-            msg["From"] = formataddr((sender_name, from_email))
+        if disp_name:
+            msg["From"] = formataddr((disp_name, from_addr))
         else:
-            msg["From"] = from_email
-        msg["To"] = to_email
+            msg["From"] = from_addr
+        msg["To"] = to_addr
         msg["Subject"] = subj
         msg["Date"] = formatdate(localtime=True)
         msg["Message-ID"] = make_msgid(
-            domain=(from_email.split("@")[-1] if "@" in from_email else None)
+            domain=(from_addr.split("@")[-1] if "@" in from_addr else None)
         )
-        msg["Reply-To"] = from_email
+        msg["Reply-To"] = from_addr
         return msg
 
     msg = EmailMessage()
     msg.set_content(b, subtype="plain", charset="utf-8", cte=_plain_body_content_transfer_encoding(b))
-    if sender_name:
-        msg["From"] = formataddr((sender_name, from_email))
+    if disp_name:
+        msg["From"] = formataddr((disp_name, from_addr))
     else:
-        msg["From"] = from_email
-    msg["To"] = to_email
+        msg["From"] = from_addr
+    msg["To"] = to_addr
     msg["Subject"] = subj
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(
-        domain=(from_email.split("@")[-1] if "@" in from_email else None)
+        domain=(from_addr.split("@")[-1] if "@" in from_addr else None)
     )
-    msg["Reply-To"] = from_email
+    msg["Reply-To"] = from_addr
     return msg
 
 
