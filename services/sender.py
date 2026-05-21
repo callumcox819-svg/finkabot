@@ -47,8 +47,10 @@ def _sanitize_header_line(value: str) -> str:
 
 
 def _sanitize_email_addr(value: str) -> str:
-    """Адрес в To/From — без \\n (иначе ValueError при send_message)."""
-    return (value or "").replace("\r", "").replace("\n", "").strip()
+    """Адрес в To/From — один email, без цитат и \\n."""
+    from services.email_address import extract_email_address
+
+    return extract_email_address(value)
 
 
 def _looks_like_html(body: str) -> bool:

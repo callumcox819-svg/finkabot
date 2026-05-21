@@ -93,11 +93,13 @@ async def _load_meta_from_db(acc_id: int, uid: str) -> dict | None:
     if not m:
         return None
 
+    from services.email_address import extract_email_address
+
     return {
-        "from_email": (m.from_email or "").strip(),
+        "from_email": extract_email_address(m.from_email or ""),
         "from_name": (m.from_name or "").strip(),
         "subject": m.subject or "",
-        "account_email": (m.account_email or "").strip(),
+        "account_email": extract_email_address(m.account_email or ""),
         "date_str": m.date_str or "",
     }
 
@@ -144,8 +146,10 @@ async def mail_tmpl_send(callback: CallbackQuery, state: FSMContext):
     if not meta:
         return await callback.answer("Письмо устарело", show_alert=True)
 
-    to_email = (meta.get("from_email") or "").strip()
-    if not to_email:
+    from services.email_address import extract_email_address, is_valid_smtp_recipient
+
+    to_email = extract_email_address(meta.get("from_email") or "")
+    if not is_valid_smtp_recipient(to_email):
         return await callback.answer("Не найден email получателя", show_alert=True)
 
     items = await load_templates(callback.from_user.id)

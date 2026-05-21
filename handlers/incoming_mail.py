@@ -604,7 +604,9 @@ async def _open_mail_reply_menu(
         except Exception:
             pass
 
-    if not to_email or "@" not in to_email:
+    from services.email_address import is_valid_smtp_recipient
+
+    if not is_valid_smtp_recipient(to_email):
         await callback.answer(
             "Не вижу email получателя. Загрузите VOID+валидацию или откройте свежее письмо.",
             show_alert=True,
@@ -780,7 +782,9 @@ def _canon_email(email: str) -> str:
     - for Gmail/Googlemail: remove dots in local-part, strip +tag, normalize domain to gmail.com
     - for others: strip +tag in local-part (common), keep domain
     """
-    e = (email or "").strip().lower()
+    from services.email_address import extract_email_address
+
+    e = extract_email_address(email)
     if "@" not in e:
         return e
     local, domain = e.split("@", 1)
@@ -845,26 +849,25 @@ def _extract_sender_email_from_mail_card_html(
     *,
     account_email: str = "",
 ) -> str:
-    """Email продавца из HTML карточки письма (если БД/FULL_META пустые после redeploy)."""
+    """Email продавца из шапки карточки (не из цитаты в «Текст»)."""
     raw = (card_html or "").strip()
     if not raw:
         return ""
+    # Тело в <blockquote> — там цитаты с чужими From; не парсим.
+    head = re.split(r"(?i)<b>\s*Тема\s*:</b>", raw, maxsplit=1)[0]
     acc = _canon_email(account_email)
-    candidates: list[str] = []
-    for chunk in re.findall(r"<code>([^<]+)</code>", raw, flags=re.I):
+    for chunk in re.findall(r"<code>([^<]+)</code>", head, flags=re.I):
         em = _canon_email(html.unescape(chunk))
-        if "@" in em and em != acc:
-            candidates.append(em)
-    if not candidates:
-        for chunk in re.findall(
-            r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
-            html.unescape(re.sub(r"<[^>]+>", " ", raw)),
-            flags=re.I,
-        ):
-            em = _canon_email(chunk)
-            if "@" in em and em != acc:
-                candidates.append(em)
-    return candidates[-1] if candidates else ""
+        if em and "@" in em and em != acc:
+            return em
+    plain = html.unescape(re.sub(r"<[^>]+>", " ", head))
+    from services.email_address import extract_email_address
+
+    for part in plain.split():
+        em = _canon_email(part)
+        if em and "@" in em and em != acc:
+            return em
+    return _canon_email(extract_email_address(plain))
 
 
 async def _offer_email_for_resolved_offer(session, offer_id: int | None) -> str:
