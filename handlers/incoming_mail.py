@@ -44,6 +44,8 @@ from services.aqua_network import generate_aqua_link, AquaError
 from services.aqua_link import resolve_aqua_image_url
 from services.incoming_mail_worker import (
     FULL_META,
+    full_body_get,
+    full_meta_get,
     _try_pin,
     build_mail_card_from_mail,
     resolve_offer_for_mail_card,
@@ -1439,14 +1441,17 @@ def _extract_translation_from_card(text: str) -> str | None:
     return None
 
 
-@router.callback_query(F.data.startswith("mail_translate:"))
-async def cb_mail_translate(callback: CallbackQuery) -> None:
+def _parse_acc_uid_callback(data: str, prefix: str) -> tuple[int, str] | None:
     try:
-        _, mail_id_s = (callback.data or "").split(":", 1)
-        mail_id = int(mail_id_s)
+        parts = (data or "").split(":")
+        if len(parts) < 3 or parts[0] != prefix:
+            return None
+        return int(parts[1]), ":".join(parts[2:])
     except Exception:
-        return await callback.answer("Неверные данные", show_alert=True)
+        return None
 
+
+async def _run_mail_translate(callback: CallbackQuery, mail_id: int) -> None:
     async with Session() as session:
         mail = (
             await session.execute(
@@ -1458,6 +1463,8 @@ async def cb_mail_translate(callback: CallbackQuery) -> None:
 
         body_full = (getattr(mail, "body", None) or "").strip()
         if not body_full:
+            body_full = full_body_get(int(mail.account_id), str(mail.imap_uid))
+        if not body_full:
             return await callback.answer("Нет текста для перевода.", show_alert=True)
 
         from services.incoming_mail_worker import _clean_mail_body_for_card
@@ -1467,64 +1474,92 @@ async def cb_mail_translate(callback: CallbackQuery) -> None:
         if not shown:
             return await callback.answer("Нет текста для перевода.", show_alert=True)
 
-        uid = callback.from_user.id
-        if bg_is_running(uid, "translate"):
-            return await callback.answer("⏳ Перевод уже выполняется…", show_alert=True)
-        await callback.answer("Перевожу…", show_alert=False)
+    uid = callback.from_user.id
+    if bg_is_running(uid, "translate"):
+        return await callback.answer("⏳ Перевод уже выполняется…", show_alert=True)
+    await callback.answer("Перевожу…", show_alert=False)
 
-        mail_id_copy = int(mail.id)
-        msg = callback.message
-        bot = callback.bot
+    mail_id_copy = int(mail_id)
+    msg = callback.message
+    bot = callback.bot
 
-        async def _translate_job() -> None:
-            translated = await translate_to_ru(shown, preserve_blocks=True)
-            if not translated:
-                try:
-                    await bot.send_message(
-                        msg.chat.id,
-                        "❌ Не удалось перевести. Попробуйте позже.",
-                        reply_to_message_id=msg.message_id,
-                    )
-                except Exception:
-                    pass
-                return
-            async with Session() as session2:
-                mail2 = (
-                    await session2.execute(
-                        sa_select(IncomingMail).where(IncomingMail.id == mail_id_copy).limit(1)
-                    )
-                ).scalars().first()
-                if not mail2:
-                    return
-                new_text, new_kb = await build_mail_card_from_mail(
-                    session2,
-                    mail2,
-                    translation=translated,
-                )
+    async def _translate_job() -> None:
+        translated = await translate_to_ru(shown, preserve_blocks=True)
+        if not translated:
             try:
-                await msg.edit_text(
-                    new_text,
-                    reply_markup=new_kb,
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                )
-            except Exception:
                 await bot.send_message(
                     msg.chat.id,
-                    new_text,
-                    reply_markup=new_kb,
-                    parse_mode="HTML",
+                    "❌ Не удалось перевести. Попробуйте позже.",
                     reply_to_message_id=msg.message_id,
                 )
+            except Exception:
+                pass
+            return
+        async with Session() as session2:
+            mail2 = (
+                await session2.execute(
+                    sa_select(IncomingMail).where(IncomingMail.id == mail_id_copy).limit(1)
+                )
+            ).scalars().first()
+            if not mail2:
+                return
+            new_text, new_kb = await build_mail_card_from_mail(
+                session2,
+                mail2,
+                translation=translated,
+            )
+        try:
+            await msg.edit_text(
+                new_text,
+                reply_markup=new_kb,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+            )
+        except Exception:
+            await bot.send_message(
+                msg.chat.id,
+                new_text,
+                reply_markup=new_kb,
+                parse_mode="HTML",
+                reply_to_message_id=msg.message_id,
+            )
 
-        if not bg_start(uid, "translate", _translate_job()):
-            return await callback.answer("⏳ Перевод уже выполняется…", show_alert=True)
-        return
+    if not bg_start(uid, "translate", _translate_job()):
+        return await callback.answer("⏳ Перевод уже выполняется…", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("mail_translate:"))
+async def cb_mail_translate(callback: CallbackQuery) -> None:
+    try:
+        _, mail_id_s = (callback.data or "").split(":", 1)
+        mail_id = int(mail_id_s)
+    except Exception:
+        return await callback.answer("Неверные данные", show_alert=True)
+    return await _run_mail_translate(callback, mail_id)
 
 
 @router.callback_query(F.data.startswith("mail_translate_stub:"))
 async def cb_mail_translate_stub(callback: CallbackQuery) -> None:
-    await callback.answer("Письмо устарело — дождитесь нового входящего.", show_alert=True)
+    parsed = _parse_acc_uid_callback(callback.data or "", "mail_translate_stub")
+    if not parsed:
+        return await callback.answer("Неверные данные", show_alert=True)
+    acc_id, uid = parsed
+
+    async with Session() as session:
+        mail = await _load_incoming_mail_for_uid(session, acc_id, uid)
+    if mail:
+        return await _run_mail_translate(callback, int(mail.id))
+
+    body = full_body_get(acc_id, uid)
+    if body:
+        return await callback.answer(
+            "Письмо ещё сохраняется в базу. Нажмите «Перевести» через 5–10 сек или дождитесь нового входящего.",
+            show_alert=True,
+        )
+    return await callback.answer(
+        "Письмо не найдено в базе. Откройте свежее входящее или нажмите «Написать ещё» с новой карточки.",
+        show_alert=True,
+    )
 
 
 @router.callback_query(F.data.startswith("mail_view:"))
@@ -1570,19 +1605,7 @@ async def cb_create_goo_link_from_db(callback: CallbackQuery):
     except Exception:
         return await callback.answer("Неверные данные", show_alert=True)
 
-    uid = callback.from_user.id
-    if bg_is_running(uid, "aqua_link"):
-        return await callback.answer("⏳ Ссылка уже создаётся…", show_alert=True)
-    try:
-        await callback.answer("⏳ Создаю ссылку…", show_alert=False)
-    except Exception:
-        pass
-
-    async def _link_job() -> None:
-        await _run_aqua_link_bg(callback, lambda: _create_aqua_link_from_db_work(callback, mail_id))
-
-    if not bg_start(uid, "aqua_link", _link_job()):
-        return await callback.answer("⏳ Ссылка уже создаётся…", show_alert=True)
+    return await _enqueue_aqua_link_by_mail_id(callback, mail_id)
 
 
 async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) -> None:
@@ -1707,19 +1730,37 @@ async def _create_aqua_link_from_db_work(callback: CallbackQuery, mail_id: int) 
         await callback.answer()
 
 
+async def _enqueue_aqua_link_by_mail_id(callback: CallbackQuery, mail_id: int) -> None:
+    uid_tg = callback.from_user.id
+    if bg_is_running(uid_tg, "aqua_link"):
+        return await callback.answer("⏳ Ссылка уже создаётся…", show_alert=True)
+    try:
+        await callback.answer("⏳ Создаю ссылку…", show_alert=False)
+    except Exception:
+        pass
+
+    async def _link_job() -> None:
+        await _run_aqua_link_bg(callback, lambda: _create_aqua_link_from_db_work(callback, int(mail_id)))
+
+    if not bg_start(uid_tg, "aqua_link", _link_job()):
+        return await callback.answer("⏳ Ссылка уже создаётся…", show_alert=True)
+
+
 @router.callback_query(F.data.startswith("goo_link:"))
 async def cb_create_goo_link(callback: CallbackQuery):
-    try:
-        _, acc_id, uid = (callback.data or "").split(":", 2)
-        acc_id = int(acc_id)
-    except Exception:
+    parsed = _parse_acc_uid_callback(callback.data or "", "goo_link")
+    if not parsed:
         return await callback.answer("Неверные данные", show_alert=True)
+    acc_id, uid = parsed
 
-    from handlers.mail_templates import _load_meta_by_mail_id, _load_meta_from_db, _STALE_MAIL_MSG
+    async with Session() as session:
+        mail = await _load_incoming_mail_for_uid(session, acc_id, uid)
+    if mail:
+        return await _enqueue_aqua_link_by_mail_id(callback, int(mail.id))
 
-    meta = FULL_META.get((acc_id, uid))
-    if not meta:
-        meta = await _load_meta_from_db(acc_id, uid)
+    from handlers.mail_templates import _load_meta_from_db, _STALE_MAIL_MSG
+
+    meta = full_meta_get(acc_id, uid) or await _load_meta_from_db(acc_id, uid)
     if not meta:
         return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
 

@@ -59,6 +59,36 @@ FULL_BODIES: Dict[tuple[int, str], str] = {}
 FULL_META: Dict[tuple[int, str], Dict[str, Any]] = {}
 
 
+def _uid_lookup_keys(uid: str) -> list[str]:
+    u = (uid or "").strip()
+    keys: list[str] = []
+    if u:
+        keys.append(u)
+    if u and not u.startswith("S:"):
+        keys.append(f"S:{u}")
+    if ":" in u:
+        tail = u.rsplit(":", 1)[-1].strip()
+        if tail and tail not in keys:
+            keys.append(tail)
+    return keys
+
+
+def full_meta_get(acc_id: int, uid: str) -> Dict[str, Any] | None:
+    for k in _uid_lookup_keys(uid):
+        m = FULL_META.get((int(acc_id), str(k)))
+        if m:
+            return m
+    return None
+
+
+def full_body_get(acc_id: int, uid: str) -> str:
+    for k in _uid_lookup_keys(uid):
+        b = FULL_BODIES.get((int(acc_id), str(k)))
+        if b:
+            return b
+    return ""
+
+
 @asynccontextmanager
 async def _imap_db_session():
     """Короткий доступ к Postgres со сбросом SOCKS-патча (не держим lock на всю обработку письма)."""
@@ -1461,7 +1491,26 @@ async def _process_mails_for_account_impl(
                     "IMAP мониторинг оставлен включённым."
                 )
 
-            kb = build_kb(acc_id, uid, mail_id=mail_db_id)
+            if not mail_db_id:
+                try:
+                    async with _imap_db_session() as session:
+                        row_id = (
+                            await session.execute(
+                                sa_select(IncomingMail.id)
+                                .where(IncomingMail.account_id == int(acc_id))
+                                .where(IncomingMail.imap_uid == int(uid_num))
+                                .order_by(IncomingMail.id.desc())
+                                .limit(1)
+                            )
+                        ).scalar_one_or_none()
+                        if row_id:
+                            mail_db_id = int(row_id)
+                except Exception:
+                    logger.exception(
+                        "Failed to resolve mail_db_id for kb acc=%s uid=%s", acc_id, uid_key
+                    )
+
+            kb = build_kb(acc_id, uid_key, mail_id=mail_db_id)
 
             # ✅ ТЗ: повторные письма от продавца должны крепиться к первому сообщению.
             reply_to_id: int | None = None
