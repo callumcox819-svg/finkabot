@@ -357,6 +357,7 @@ async def _reply_notify_build_async(
                     str(uid),
                     meta=meta,
                     state_data=state_data,
+                    mail_id=state_data.get("mail_id"),
                 )
             if to_e:
                 merged_state.setdefault("to_email", to_e)
@@ -576,30 +577,25 @@ async def _open_mail_reply_menu(
 
     uid_key = str(uid)
     meta: dict = dict(FULL_META.get((acc_id, uid_key)) or {})
+    card_html = ""
+    if callback.message:
+        card_html = callback.message.html_text or callback.message.text or ""
 
     async with db_session() as session:
-        if mail_id:
-            mail_row = (
-                await session.execute(
-                    sa_select(IncomingMail).where(IncomingMail.id == int(mail_id)).limit(1)
-                )
-            ).scalars().first()
-            if mail_row:
-                acc_id = int(mail_row.account_id)
-                uid_key = str(mail_row.imap_uid)
-                meta = {
-                    "from_email": mail_row.from_email or "",
-                    "subject": mail_row.subject or "",
-                    "account_email": mail_row.account_email or "",
-                }
-
         to_email, subject, account_email = await _resolve_reply_recipient(
             session,
             acc_id,
             uid_key,
             meta=meta,
             state_data={},
+            mail_id=int(mail_id) if mail_id else None,
+            card_html=card_html,
         )
+        if mail_id:
+            mail_row = await _load_incoming_mail_by_id(session, int(mail_id))
+            if mail_row:
+                acc_id = int(mail_row.account_id)
+                uid_key = str(mail_row.imap_uid)
 
         inbox_label = ""
         try:
@@ -822,6 +818,71 @@ async def _load_incoming_mail_for_uid(session, acc_id: int, uid: str) -> Incomin
     ).scalars().first()
 
 
+async def _load_incoming_mail_by_id(session, mail_id: int) -> IncomingMail | None:
+    try:
+        mid = int(mail_id)
+    except (TypeError, ValueError):
+        return None
+    return (
+        await session.execute(
+            sa_select(IncomingMail).where(IncomingMail.id == mid).limit(1)
+        )
+    ).scalars().first()
+
+
+def _meta_from_incoming_mail(mail: IncomingMail) -> dict:
+    return {
+        "from_email": (mail.from_email or "").strip(),
+        "from_name": (mail.from_name or "").strip(),
+        "subject": mail.subject or "",
+        "account_email": (mail.account_email or "").strip(),
+        "date_str": mail.date_str or "",
+    }
+
+
+def _extract_sender_email_from_mail_card_html(
+    card_html: str,
+    *,
+    account_email: str = "",
+) -> str:
+    """Email продавца из HTML карточки письма (если БД/FULL_META пустые после redeploy)."""
+    raw = (card_html or "").strip()
+    if not raw:
+        return ""
+    acc = _canon_email(account_email)
+    candidates: list[str] = []
+    for chunk in re.findall(r"<code>([^<]+)</code>", raw, flags=re.I):
+        em = _canon_email(html.unescape(chunk))
+        if "@" in em and em != acc:
+            candidates.append(em)
+    if not candidates:
+        for chunk in re.findall(
+            r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+            html.unescape(re.sub(r"<[^>]+>", " ", raw)),
+            flags=re.I,
+        ):
+            em = _canon_email(chunk)
+            if "@" in em and em != acc:
+                candidates.append(em)
+    return candidates[-1] if candidates else ""
+
+
+async def _offer_email_for_resolved_offer(session, offer_id: int | None) -> str:
+    if not offer_id:
+        return ""
+    row = (
+        await session.execute(
+            sa_select(OfferEmail.email)
+            .where(OfferEmail.offer_id == int(offer_id))
+            .order_by(OfferEmail.id.asc())
+            .limit(1)
+        )
+    ).first()
+    if row and row[0]:
+        return _canon_email(str(row[0]))
+    return ""
+
+
 async def _resolve_reply_recipient(
     session,
     acc_id: int,
@@ -829,12 +890,14 @@ async def _resolve_reply_recipient(
     *,
     meta: dict | None = None,
     state_data: dict | None = None,
+    mail_id: int | None = None,
+    card_html: str | None = None,
 ) -> tuple[str, str, str]:
     """
     Email получателя ответа (контакт), тема, наш ящик.
     Источник правды — IncomingMail в Postgres (переживает redeploy).
     """
-    meta = meta or {}
+    meta = dict(meta or {})
     state_data = state_data or {}
 
     to_email = _canon_email(
@@ -845,16 +908,41 @@ async def _resolve_reply_recipient(
         state_data.get("account_email") or meta.get("account_email") or ""
     )
 
-    mail = await _load_incoming_mail_for_uid(session, acc_id, uid)
+    mail: IncomingMail | None = None
+    if mail_id:
+        mail = await _load_incoming_mail_by_id(session, int(mail_id))
+        if mail:
+            acc_id = int(mail.account_id)
+            uid = str(mail.imap_uid)
+            meta = {**meta, **_meta_from_incoming_mail(mail)}
+
+    if not mail:
+        mail = await _load_incoming_mail_for_uid(session, acc_id, uid)
+
     if mail:
         to_email = _canon_email(mail.from_email or "") or to_email
         subject = (mail.subject or "").strip() or subject
         account_email = _canon_email(mail.account_email or "") or account_email
+        if not to_email:
+            to_email = await _offer_email_for_resolved_offer(
+                session, getattr(mail, "resolved_offer_id", None)
+            )
+
+    if not to_email:
+        fm = FULL_META.get((int(acc_id), str(uid))) or {}
+        to_email = _canon_email(fm.get("from_email") or "") or to_email
+        subject = subject or (fm.get("subject") or "").strip()
+        account_email = account_email or _canon_email(fm.get("account_email") or "")
 
     if not account_email:
         acc = await session.get(EmailAccount, int(acc_id))
         if acc and acc.email:
             account_email = _canon_email(acc.email)
+
+    if not to_email and card_html:
+        to_email = _extract_sender_email_from_mail_card_html(
+            card_html, account_email=account_email
+        )
 
     if to_email:
         fm_key = (int(acc_id), str(uid))
@@ -1869,6 +1957,7 @@ async def cb_mail_reply_mode(callback: CallbackQuery, state: FSMContext):
                 uid,
                 meta=FULL_META.get((acc_id, uid)),
                 state_data=data,
+                mail_id=data.get("mail_id"),
             )
         await state.update_data(
             to_email=to_email,
@@ -1918,6 +2007,7 @@ async def cb_mail_reply_preset_send(callback: CallbackQuery, state: FSMContext):
             mail_uid,
             meta=FULL_META.get((acc_id, mail_uid)),
             state_data=data,
+            mail_id=data.get("mail_id"),
         )
     if not to_email or "@" not in to_email:
         return await callback.answer(
@@ -2058,6 +2148,7 @@ async def cb_mail_reply_html_send(callback: CallbackQuery, state: FSMContext):
             uid,
             meta=FULL_META.get((acc_id, uid)),
             state_data=data,
+            mail_id=data.get("mail_id"),
         )
     if not to_email or "@" not in to_email:
         return await callback.answer(
@@ -2247,6 +2338,7 @@ async def mail_reply_text(message: Message, state: FSMContext):
             uid,
             meta=FULL_META.get((acc_id, uid)),
             state_data=data,
+            mail_id=data.get("mail_id"),
         )
     if not to_email or "@" not in to_email:
         return await message.answer(
@@ -2327,6 +2419,7 @@ async def mail_reply_custom_html(message: Message, state: FSMContext):
             mail_uid,
             meta=FULL_META.get((acc_id, mail_uid)),
             state_data=data,
+            mail_id=data.get("mail_id"),
         )
     if not to_email or "@" not in to_email:
         return await message.answer(
