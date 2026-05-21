@@ -142,7 +142,11 @@ class BotAccessMiddleware(BaseMiddleware):
         if user is None:
             return await handler(event, data)
 
+        tg_id = int(user.id)
+
         if isinstance(event, Message):
+            if _is_start_message(event):
+                return await handler(event, data)
             if _is_non_private_message(event) or _is_service_message(event):
                 return await handler(event, data)
             if getattr(user, "is_bot", False):
@@ -150,14 +154,26 @@ class BotAccessMiddleware(BaseMiddleware):
             if _bypass_access_db_check(event):
                 return await handler(event, data)
 
+        # Inline-кнопки: не блокируем из-за очереди к Postgres (иначе «0 реакции»).
+        if isinstance(event, CallbackQuery):
+            if tg_id in config_admin_ids():
+                return await handler(event, data)
+            cached = _ACCESS_CACHE.get(tg_id)
+            if cached and (time.monotonic() - cached[2]) < _ACCESS_CACHE_TTL_SEC:
+                is_admin, has_access = cached[0], cached[1]
+                if is_admin or has_access:
+                    return await handler(event, data)
+
         try:
             is_admin, has_access = await asyncio.wait_for(
-                _resolve_access(int(user.id)),
+                _resolve_access(tg_id),
                 timeout=_ACCESS_DB_TIMEOUT_SEC,
             )
         except asyncio.TimeoutError:
             logger.error("BotAccessMiddleware: DB timeout tg=%s", user.id)
             if _bypass_access_db_check(event):
+                return await handler(event, data)
+            if isinstance(event, CallbackQuery):
                 return await handler(event, data)
             if isinstance(event, Message):
                 try:
@@ -165,11 +181,6 @@ class BotAccessMiddleware(BaseMiddleware):
                         "⏳ База данных занята (идёт валидация или рассылка). "
                         "Подожди 15–30 сек и повтори.",
                     )
-                except Exception:
-                    pass
-            elif isinstance(event, CallbackQuery):
-                try:
-                    await event.answer("⏳ База занята, подожди 15 сек.", show_alert=True)
                 except Exception:
                     pass
             return None

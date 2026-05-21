@@ -352,14 +352,12 @@ async def main() -> None:
     dp.errors.register(_on_error)
 
     from middlewares.bot_access import BotAccessMiddleware
-    from middlewares.callback_ack import CallbackAckMiddleware
     from middlewares.update_log import CallbackLogMiddleware, MessageLogMiddleware
 
     dp.message.middleware(MessageLogMiddleware())
     dp.callback_query.middleware(CallbackLogMiddleware())
     dp.message.middleware(BotAccessMiddleware())
     dp.callback_query.middleware(BotAccessMiddleware())
-    dp.callback_query.middleware(CallbackAckMiddleware())
 
     _bind_priority_dispatcher_handlers(dp)
 

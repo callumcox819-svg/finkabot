@@ -59,14 +59,14 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     except Exception:
         pass
 
+    if tg_id in config_admin_ids():
+        await message.answer(_WELCOME, reply_markup=main_menu_kb(tg_id, show_admin=True))
+        return
+
     try:
         await message.answer("⏳ Загружаю меню…")
     except Exception:
         logger.exception("/start: не удалось отправить первый ответ tg=%s", tg_id)
-        return
-
-    if tg_id in config_admin_ids():
-        await message.answer(_WELCOME, reply_markup=main_menu_kb(tg_id, show_admin=True))
         return
 
     try:

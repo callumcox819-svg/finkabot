@@ -572,15 +572,12 @@ async def _open_mail_reply_menu(
     mail_id: int | None = None,
 ) -> None:
     """Меню ответа — отдельное сообщение. Карточку письма не трогаем (кнопки остаются)."""
-    try:
-        await callback.answer("✉️ Открываю ответ…", show_alert=False)
-    except Exception:
-        pass
+    from database import db_session
 
     uid_key = str(uid)
     meta: dict = dict(FULL_META.get((acc_id, uid_key)) or {})
 
-    async with Session() as session:
+    async with db_session() as session:
         if mail_id:
             mail_row = (
                 await session.execute(
@@ -612,13 +609,10 @@ async def _open_mail_reply_menu(
             pass
 
     if not to_email or "@" not in to_email:
-        try:
-            await callback.answer(
-                "Не вижу email получателя. Загрузите VOID+валидацию или откройте свежее письмо.",
-                show_alert=True,
-            )
-        except Exception:
-            pass
+        await callback.answer(
+            "Не вижу email получателя. Загрузите VOID+валидацию или откройте свежее письмо.",
+            show_alert=True,
+        )
         return
 
     fm = dict(FULL_META.get((acc_id, uid_key)) or meta)
@@ -638,22 +632,27 @@ async def _open_mail_reply_menu(
     anchor_id = int(card.message_id) if card else None
 
     ui_message_id: int | None = None
-    if card:
-        try:
-            ui = await callback.bot.send_message(
-                int(card.chat.id),
-                (
-                    f"<b>✉️ Ответ на письмо</b>\n"
-                    f"Кому: <code>{_e(to_email)}</code>\n\n"
-                    f"{REPLY_CHOICE_TEXT}"
-                ),
-                reply_markup=kb,
-                parse_mode="HTML",
-                reply_to_message_id=anchor_id,
-            )
-            ui_message_id = int(ui.message_id)
-        except Exception:
-            logger.exception("mail_reply send_menu failed acc=%s uid=%s", acc_id, uid_key)
+    if not card:
+        await callback.answer("Нет сообщения для ответа", show_alert=True)
+        return
+
+    try:
+        ui = await callback.bot.send_message(
+            int(card.chat.id),
+            (
+                f"<b>✉️ Ответ на письмо</b>\n"
+                f"Кому: <code>{_e(to_email)}</code>\n\n"
+                f"{REPLY_CHOICE_TEXT}"
+            ),
+            reply_markup=kb,
+            parse_mode="HTML",
+            reply_to_message_id=anchor_id,
+        )
+        ui_message_id = int(ui.message_id)
+    except Exception as e:
+        logger.exception("mail_reply send_menu failed acc=%s uid=%s", acc_id, uid_key)
+        await callback.answer(f"Не удалось открыть меню: {type(e).__name__}", show_alert=True)
+        return
 
     await state.update_data(
         acc_id=acc_id,
@@ -666,6 +665,7 @@ async def _open_mail_reply_menu(
         ui_message_id=ui_message_id,
         inbox_label=inbox_label,
     )
+    await callback.answer()
 
 
 def _kb_preset_pick(items: list[TemplateItem], acc_id: int, uid: str):
