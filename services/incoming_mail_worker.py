@@ -1197,45 +1197,58 @@ async def _process_mails_for_account_impl(
                         )
                         session.add(existing)
 
-                    subj = subject or ""
-                    offer_bound, listing_url = await resolve_listing_for_incoming_mail(
-                        session,
-                        user_id=int(user_id),
-                        from_email=from_email_clean,
-                        subject=subj,
-                        from_name=from_name or "",
-                        body_text=body_clean or "",
-                        resolved_offer_id=getattr(existing, "resolved_offer_id", None),
-                        mail_ad_url=(getattr(existing, "ad_url", "") or "").strip() or None,
-                        inbox_email=inbox_email_clean,
-                    )
-                    if offer_bound:
-                        resolved_offer_id = int(offer_bound.id)
-                        resolved_offer_email_id = None
-                    else:
-                        resolved_offer_id, resolved_offer_email_id = await _resolve_offer_for_incoming(
-                            session,
-                            user_id=user_id,
-                            from_email=from_email_clean,
-                            subject=subj,
-                            from_name=from_name or "",
-                            body_text=body_clean or "",
-                        )
-                        listing_url = ""
-
+                    # Сначала базовые поля в БД — кнопки «Ссылка»/«Перевести» не должны падать,
+                    # даже если подбор оффера ниже упадёт.
                     existing.account_email = inbox_email_clean
                     existing.from_email = from_email_clean
                     existing.from_name = (from_name or "").strip() or None
                     existing.subject = (subject or "").strip() or None
                     existing.date_str = (date_str or "").strip() or None
                     existing.body = body_clean or None
-                    existing.resolved_offer_id = resolved_offer_id
-                    existing.resolved_offer_email_id = resolved_offer_email_id
-                    if listing_url:
-                        existing.ad_url = listing_url.strip()
-
-                    await _db_commit_retry(session)
+                    await session.flush()
                     mail_db_id = int(existing.id)
+                    await _db_commit_retry(session)
+
+                    subj = subject or ""
+                    listing_url = ""
+                    try:
+                        offer_bound, listing_url = await resolve_listing_for_incoming_mail(
+                            session,
+                            user_id=int(user_id),
+                            from_email=from_email_clean,
+                            subject=subj,
+                            from_name=from_name or "",
+                            body_text=body_clean or "",
+                            resolved_offer_id=getattr(existing, "resolved_offer_id", None),
+                            mail_ad_url=(getattr(existing, "ad_url", "") or "").strip() or None,
+                            inbox_email=inbox_email_clean,
+                        )
+                        if offer_bound:
+                            resolved_offer_id = int(offer_bound.id)
+                            resolved_offer_email_id = None
+                        else:
+                            resolved_offer_id, resolved_offer_email_id = await _resolve_offer_for_incoming(
+                                session,
+                                user_id=user_id,
+                                from_email=from_email_clean,
+                                subject=subj,
+                                from_name=from_name or "",
+                                body_text=body_clean or "",
+                            )
+                            listing_url = ""
+
+                        existing.resolved_offer_id = resolved_offer_id
+                        existing.resolved_offer_email_id = resolved_offer_email_id
+                        if listing_url:
+                            existing.ad_url = listing_url.strip()
+                        await _db_commit_retry(session)
+                    except Exception:
+                        logger.exception(
+                            "Offer match for IncomingMail id=%s acc=%s uid=%s",
+                            mail_db_id,
+                            acc_id,
+                            uid_key,
+                        )
 
             except Exception:
                 logger.exception("Failed to persist IncomingMail acc=%s uid=%s", acc_id, uid)

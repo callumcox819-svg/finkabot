@@ -822,9 +822,34 @@ async def _load_incoming_mail_for_uid(session, acc_id: int, uid: str) -> Incomin
             sa_select(IncomingMail)
             .where(IncomingMail.account_id == int(acc_id))
             .where(IncomingMail.imap_uid == int(uid_num))
+            .order_by(IncomingMail.id.desc())
             .limit(1)
         )
     ).scalars().first()
+
+
+async def _load_incoming_mail_for_callback(
+    session,
+    *,
+    acc_id: int | None = None,
+    uid: str | None = None,
+    tg_message_id: int | None = None,
+) -> IncomingMail | None:
+    """Письмо для кнопок на карточке: acc+uid, иначе id сообщения Telegram."""
+    if acc_id and uid:
+        mail = await _load_incoming_mail_for_uid(session, int(acc_id), str(uid))
+        if mail:
+            return mail
+    if tg_message_id:
+        return (
+            await session.execute(
+                sa_select(IncomingMail)
+                .where(IncomingMail.telegram_message_id == int(tg_message_id))
+                .order_by(IncomingMail.id.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+    return None
 
 
 async def _load_incoming_mail_by_id(session, mail_id: int) -> IncomingMail | None:
@@ -1544,20 +1569,26 @@ async def cb_mail_translate_stub(callback: CallbackQuery) -> None:
     if not parsed:
         return await callback.answer("Неверные данные", show_alert=True)
     acc_id, uid = parsed
+    card_mid = int(callback.message.message_id) if callback.message else None
 
     async with Session() as session:
-        mail = await _load_incoming_mail_for_uid(session, acc_id, uid)
+        mail = await _load_incoming_mail_for_callback(
+            session,
+            acc_id=acc_id,
+            uid=uid,
+            tg_message_id=card_mid,
+        )
     if mail:
         return await _run_mail_translate(callback, int(mail.id))
 
     body = full_body_get(acc_id, uid)
     if body:
         return await callback.answer(
-            "Письмо ещё сохраняется в базу. Нажмите «Перевести» через 5–10 сек или дождитесь нового входящего.",
+            "Письмо сохраняется в базу. Нажмите «Перевести» через 5–10 сек.",
             show_alert=True,
         )
     return await callback.answer(
-        "Письмо не найдено в базе. Откройте свежее входящее или нажмите «Написать ещё» с новой карточки.",
+        "Письмо не найдено в базе. Подождите новое входящее или redeploy с последним коммитом.",
         show_alert=True,
     )
 
@@ -1752,9 +1783,15 @@ async def cb_create_goo_link(callback: CallbackQuery):
     if not parsed:
         return await callback.answer("Неверные данные", show_alert=True)
     acc_id, uid = parsed
+    card_mid = int(callback.message.message_id) if callback.message else None
 
     async with Session() as session:
-        mail = await _load_incoming_mail_for_uid(session, acc_id, uid)
+        mail = await _load_incoming_mail_for_callback(
+            session,
+            acc_id=acc_id,
+            uid=uid,
+            tg_message_id=card_mid,
+        )
     if mail:
         return await _enqueue_aqua_link_by_mail_id(callback, int(mail.id))
 
@@ -1762,7 +1799,11 @@ async def cb_create_goo_link(callback: CallbackQuery):
 
     meta = full_meta_get(acc_id, uid) or await _load_meta_from_db(acc_id, uid)
     if not meta:
-        return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
+        return await callback.answer(
+            "Письмо ещё не в базе. Подождите 5–10 сек и нажмите снова, "
+            "или дождитесь следующего входящего.",
+            show_alert=True,
+        )
 
     uid_tg = callback.from_user.id
     if bg_is_running(uid_tg, "aqua_link"):

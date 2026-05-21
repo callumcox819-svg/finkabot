@@ -136,8 +136,9 @@ async def _resolve_mail_meta(
     uid: str | None = None,
     mail_id: int | None = None,
     state_data: dict | None = None,
+    tg_message_id: int | None = None,
 ) -> dict | None:
-    """Письмо для пресетов: RAM → Postgres по mail_id → по acc+uid → FSM."""
+    """Письмо для пресетов: RAM → Postgres по mail_id → acc+uid → id карточки TG."""
     state_data = state_data or {}
     mid = mail_id or state_data.get("mail_id")
     if mid:
@@ -151,6 +152,19 @@ async def _resolve_mail_meta(
         meta = FULL_META.get((acc, uid_s)) or await _load_meta_from_db(acc, uid_s)
         if meta:
             return meta
+
+    if tg_message_id:
+        async with Session() as session:
+            m = (
+                await session.execute(
+                    select(IncomingMail)
+                    .where(IncomingMail.telegram_message_id == int(tg_message_id))
+                    .order_by(IncomingMail.id.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+        if m:
+            return _meta_dict_from_mail(m)
 
     return None
 
@@ -180,7 +194,14 @@ async def mail_tmpl_open(callback: CallbackQuery, state: FSMContext):
     except Exception:
         return await callback.answer("Неверные данные", show_alert=True)
 
-    meta = await _resolve_mail_meta(acc_id=acc_id, uid=uid, mail_id=mail_id, state_data=data)
+    card_mid = int(callback.message.message_id) if callback.message else None
+    meta = await _resolve_mail_meta(
+        acc_id=acc_id,
+        uid=uid,
+        mail_id=mail_id,
+        state_data=data,
+        tg_message_id=card_mid,
+    )
     if not meta:
         return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
 
@@ -225,7 +246,14 @@ async def mail_tmpl_send(callback: CallbackQuery, state: FSMContext):
     except Exception:
         return await callback.answer("Неверный формат", show_alert=True)
 
-    meta = await _resolve_mail_meta(acc_id=acc_id, uid=uid, mail_id=mail_id, state_data=data)
+    card_mid = int(callback.message.message_id) if callback.message else None
+    meta = await _resolve_mail_meta(
+        acc_id=acc_id,
+        uid=uid,
+        mail_id=mail_id,
+        state_data=data,
+        tg_message_id=card_mid,
+    )
     if not meta:
         return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
 
