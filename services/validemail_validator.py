@@ -37,7 +37,7 @@ class ValidationConfig:
     validation_url: str = DEFAULT_VALIDEMAIL_URL
 
     concurrency: int = 12
-    max_emails_per_seller: int = 4
+    max_emails_per_seller: int = 1
     min_len: int = MIN_NAME_TOKEN_LEN
     max_len: int = 40
     require_first_and_last: bool = False
@@ -88,7 +88,7 @@ def _make_local_part_from_name(name: str, *, require_first_and_last: bool) -> st
 
 def _make_local_part_variants(name: str, *, require_first_and_last: bool) -> list[str]:
     """
-    Логины из имени продавца (готовые email из JSON не используем).
+    Логины из имени продавца: Maria Johansen → maria.johansen; Martuis2 → martuis2.
     Приоритет: ник (Semiuel2421) или first.last (Sam Day → sam.day), затем firstlast.
     """
     out: list[str] = []
@@ -342,7 +342,7 @@ async def _validate_offers_old(
     if stats is not None:
         stats["pending_seller_names"] = pending_seller_names
 
-    # 1) Имя из JSON → local-part (готовые email в файле игнорируем)
+    # 1) Только имя из JSON → local-part → name@domain (готовых email в файле нет)
     prepared: list[dict[str, Any]] = []
     for it in items:
         if not isinstance(it, dict):
@@ -397,9 +397,8 @@ async def _validate_offers_old(
     if not prepared:
         return []
 
-    # ✅ ТЗ: домены проверяем по приоритету, но на одного продавца сохраняем максимум N (сейчас N=2),
-    # и не проверяем дальше для конкретного продавца, если уже набрали лимит.
-    per_seller_limit = max(1, int(cfg.max_emails_per_seller))
+    # Одна валидная почта на продавца → сохраняем лот и идём дальше (без путаницы в AQUA/ответах).
+    per_seller_limit = 1
 
     # хранит найденные валидные emails по индексу prepared
     found_by_idx: list[list[str]] = [[] for _ in prepared]
@@ -490,6 +489,8 @@ async def _validate_offers_old(
             overall_done += len(results)
             combos_valid = 0
             for _e, ok, raw in results:
+                if len(found_by_idx[seller_i]) >= per_seller_limit:
+                    break
                 if not ok:
                     if stats is not None and _is_api_failure(ok, raw):
                         stats["api_errors"] = int(stats.get("api_errors") or 0) + 1
@@ -507,6 +508,8 @@ async def _validate_offers_old(
                 lst.append(key)
                 if stats is not None:
                     stats["last_valid_email"] = key
+                if len(lst) >= per_seller_limit:
+                    break
             return combos_valid
 
     def _refresh_stats() -> None:
@@ -533,7 +536,7 @@ async def _validate_offers_old(
         extra_locals = locals_list[1:]
 
         for dom in domains_clean:
-            if len(found_by_idx[i]) >= per_seller_limit:
+            if found_by_idx[i]:
                 break
             batch = [f"{primary}@{dom}".lower()]
             results = await _run_batch(batch, seller_i=i, dom=dom, api_key=api_key)
@@ -545,11 +548,19 @@ async def _validate_offers_old(
             if found_by_idx[i]:
                 break
 
-        if found_by_idx[i] or not extra_locals:
+        if found_by_idx[i]:
+            nk = str(prepared[i].get("name_key") or "").strip()
+            if nk:
+                async with state_lock:
+                    batch_seen_names.add(nk)
+                    pending_seller_names.add(nk)
+            return
+
+        if not extra_locals:
             return
 
         for dom in domains_clean:
-            if len(found_by_idx[i]) >= per_seller_limit:
+            if found_by_idx[i]:
                 break
             batch = [f"{local}@{dom}".lower() for local in extra_locals]
             results = await _run_batch(batch, seller_i=i, dom=dom, api_key=api_key)

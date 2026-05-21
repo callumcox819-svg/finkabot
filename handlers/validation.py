@@ -32,6 +32,9 @@ router = Router()
 REPLACE_OLD_FOR_USER = True
 REQUIRE_FIRST_AND_LAST = False
 PROGRESS_UPDATE_INTERVAL = 3  # seconds
+# Одна валидная почта на продавца → один OfferEmail, без путаницы при AQUA и входящих.
+MAX_EMAILS_PER_SELLER = 1
+MAX_EMAILS_PER_OFFER = 1
 
 
 def _progress_bar(done: int, total: int, width: int = 20) -> tuple[str, int]:
@@ -381,7 +384,7 @@ async def _run_validation_pipeline(message: Message, status_msg: Message, items:
         validemail_api_keys=api_keys,
         validation_url=config.VALIDEMAIL_URL,
         concurrency=max(8, int(getattr(config, "VALIDEMAIL_CONCURRENCY", 20) or 20)),
-        max_emails_per_seller=3,
+        max_emails_per_seller=MAX_EMAILS_PER_SELLER,
         require_first_and_last=REQUIRE_FIRST_AND_LAST,
         max_len=40,
         min_len=MIN_NAME_TOKEN_LEN,
@@ -495,7 +498,7 @@ async def _run_validation_pipeline(message: Message, status_msg: Message, items:
             items=items,
             validated_rows=validated or [],
             norm_email=_norm_email,
-            max_emails_per_offer=2,
+            max_emails_per_offer=MAX_EMAILS_PER_OFFER,
         )
         await session.commit()
 

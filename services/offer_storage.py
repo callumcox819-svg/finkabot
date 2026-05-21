@@ -181,9 +181,16 @@ def index_validated_rows(validated: list[dict[str, Any]]) -> dict[str, dict[str,
     return out
 
 
-def emails_from_validated_row(row: dict[str, Any] | None, norm_email) -> list[str]:
+def emails_from_validated_row(
+    row: dict[str, Any] | None,
+    norm_email,
+    *,
+    max_emails: int = 1,
+) -> list[str]:
+    """Не больше одной почты на лот — первая валидная из результата валидации."""
     if not row:
         return []
+    limit = max(1, int(max_emails))
     picked: list[str] = []
     seen: set[str] = set()
     for key in ("emails", "validated_emails"):
@@ -193,6 +200,8 @@ def emails_from_validated_row(row: dict[str, Any] | None, norm_email) -> list[st
                 continue
             seen.add(e2)
             picked.append(e2)
+            if len(picked) >= limit:
+                return picked
     return picked
 
 
@@ -216,10 +225,10 @@ async def save_all_offers_from_import(
     items: list[dict[str, Any]],
     validated_rows: list[dict[str, Any]],
     norm_email,
-    max_emails_per_offer: int = 2,
+    max_emails_per_offer: int = 1,
 ) -> tuple[int, int, int, list[dict[str, Any]]]:
     """
-    Сохранить ВСЕ объявления из файла.
+    Сохранить ВСЕ объявления из файла (по одной валидной почте на лот).
     Returns: (offers_saved, offers_with_email, email_rows_saved, output_json_rows)
     """
     vindex = index_validated_rows(validated_rows)
@@ -233,7 +242,9 @@ async def save_all_offers_from_import(
             continue
         vrow = match_validated_row_for_item(it, vindex)
         fields = fields_from_item(it)
-        picked = emails_from_validated_row(vrow, norm_email)
+        picked = emails_from_validated_row(
+            vrow, norm_email, max_emails=max_emails_per_offer
+        )
 
         # 100% полей VOID — для генерации ссылок; ключ лота = item_link.
         payload = json.loads(json.dumps(it, ensure_ascii=False, default=str))
