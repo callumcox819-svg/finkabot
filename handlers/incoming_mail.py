@@ -537,27 +537,26 @@ def _is_primary_mail_reply_cb(data: str | None) -> bool:
     return d.startswith("mail_reply:") and d.split(":", 1)[0] == "mail_reply"
 
 
-def _kb_reply_choice(acc_id: int, uid: str, *, mail_id: int | None = None):
+def _kb_reply_choice(acc_id: int, uid: str):
     from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
     uid_s = str(uid)
-    mid = f":{int(mail_id)}" if mail_id else ""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text="📄 Отправить пресет",
-                    callback_data=f"mail_reply_mode:preset:{acc_id}:{uid_s}{mid}",
+                    callback_data=f"mail_reply_mode:preset:{acc_id}:{uid_s}",
                 ),
                 InlineKeyboardButton(
                     text="🧩 Отправить HTML",
-                    callback_data=f"mail_reply_mode:html:{acc_id}:{uid_s}{mid}",
+                    callback_data=f"mail_reply_mode:html:{acc_id}:{uid_s}",
                 ),
             ],
             [
                 InlineKeyboardButton(
                     text="🚫 Отмена",
-                    callback_data=f"mail_reply_mode:cancel:{acc_id}:{uid_s}{mid}",
+                    callback_data=f"mail_reply_mode:cancel:{acc_id}:{uid_s}",
                 )
             ],
         ]
@@ -572,9 +571,9 @@ async def _open_mail_reply_menu(
     uid: str,
     mail_id: int | None = None,
 ) -> None:
-    """Меню ответа на письмо — на той же карточке (edit), иначе reply в чат."""
+    """Меню ответа — отдельное сообщение. Карточку письма не трогаем (кнопки остаются)."""
     try:
-        await callback.answer("✉️ Выберите способ ответа", show_alert=False)
+        await callback.answer("✉️ Открываю ответ…", show_alert=False)
     except Exception:
         pass
 
@@ -634,45 +633,27 @@ async def _open_mail_reply_menu(
     FULL_META[(acc_id, uid_key)] = fm
 
     await state.set_state(_MailReplyState.waiting_choice)
-    kb = _kb_reply_choice(acc_id, uid_key, mail_id=mail_id)
-    ui_message_id: int | None = None
+    kb = _kb_reply_choice(acc_id, uid_key)
     card = callback.message
+    anchor_id = int(card.message_id) if card else None
 
+    ui_message_id: int | None = None
     if card:
         try:
-            cur = (card.html_text or card.text or "").strip()
-            marker = "Выберите вариант ответа"
-            if marker not in cur:
-                new_text = (
-                    f"{cur}\n\n<b>✉️ {marker}:</b>\n"
-                    f"Кому: <code>{_e(to_email)}</code>"
-                )
-            else:
-                new_text = cur
-            await card.edit_text(
-                new_text,
+            ui = await callback.bot.send_message(
+                int(card.chat.id),
+                (
+                    f"<b>✉️ Ответ на письмо</b>\n"
+                    f"Кому: <code>{_e(to_email)}</code>\n\n"
+                    f"{REPLY_CHOICE_TEXT}"
+                ),
                 reply_markup=kb,
                 parse_mode="HTML",
-                disable_web_page_preview=True,
+                reply_to_message_id=anchor_id,
             )
-            ui_message_id = int(card.message_id)
-        except Exception as e:
-            logger.warning("mail_reply edit_text failed acc=%s uid=%s: %s", acc_id, uid_key, e)
-            try:
-                ui = await card.reply(
-                    f"<b>✉️ {REPLY_CHOICE_TEXT}</b>\nКому: <code>{_e(to_email)}</code>",
-                    reply_markup=kb,
-                    parse_mode="HTML",
-                )
-                ui_message_id = int(ui.message_id)
-            except Exception:
-                logger.exception("mail_reply reply() failed acc=%s uid=%s", acc_id, uid_key)
-                sent = await callback.bot.send_message(
-                    int(card.chat.id),
-                    f"✉️ {REPLY_CHOICE_TEXT}\nКому: {to_email}",
-                    reply_markup=kb,
-                )
-                ui_message_id = int(sent.message_id)
+            ui_message_id = int(ui.message_id)
+        except Exception:
+            logger.exception("mail_reply send_menu failed acc=%s uid=%s", acc_id, uid_key)
 
     await state.update_data(
         acc_id=acc_id,
@@ -681,7 +662,7 @@ async def _open_mail_reply_menu(
         to_email=to_email,
         subject=subject,
         account_email=account_email,
-        anchor_message_id=int(card.message_id) if card else None,
+        anchor_message_id=anchor_id,
         ui_message_id=ui_message_id,
         inbox_label=inbox_label,
     )
@@ -1828,11 +1809,14 @@ async def cb_mail_reply_mode(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
 
     if mode in {"cancel"}:
-        await _delete_message_safe(
-            callback.bot,
-            callback.message.chat.id,
-            data.get("ui_message_id") or callback.message.message_id,
-        )
+        ui_mid = data.get("ui_message_id")
+        anchor_mid = data.get("anchor_message_id")
+        if ui_mid and int(ui_mid) != int(anchor_mid or 0):
+            await _delete_message_safe(
+                callback.bot,
+                callback.message.chat.id,
+                int(ui_mid),
+            )
         await state.clear()
         return await callback.answer("Отменено")
 

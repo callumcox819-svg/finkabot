@@ -5,6 +5,7 @@ import os
 from aiogram import Router, F
 from aiogram.types import Message, ReplyKeyboardRemove
 from aiogram.filters import CommandStart
+from aiogram.fsm.context import FSMContext
 
 from keyboards.main_menu import main_menu_kb
 from database import db_session
@@ -45,7 +46,7 @@ async def _start_load_user(tg_id: int) -> tuple[bool, bool, bool]:
 
 @router.message(CommandStart())
 @router.message(F.text.in_({"/ping", "/health"}))
-async def cmd_start(message: Message) -> None:
+async def cmd_start(message: Message, state: FSMContext) -> None:
     tg_id = int(message.from_user.id)
     text = (message.text or "").strip().lower()
     if text in ("/ping", "/health"):
@@ -53,6 +54,10 @@ async def cmd_start(message: Message) -> None:
         return
 
     logger.info("▶ HANDLER /start tg=%s", tg_id)
+    try:
+        await state.clear()
+    except Exception:
+        pass
 
     try:
         await message.answer("⏳ Загружаю меню…")
