@@ -666,7 +666,13 @@ async def _open_mail_reply_menu(
     await callback.answer()
 
 
-def _kb_preset_pick(items: list[TemplateItem], acc_id: int, uid: str):
+def _kb_preset_pick(
+    items: list[TemplateItem],
+    acc_id: int,
+    uid: str,
+    *,
+    mail_id: int | None = None,
+):
     """Picker for reply-presets.
 
     IMPORTANT (per TZ): must use the same presets as ⚡ Шаблоны.
@@ -678,14 +684,11 @@ def _kb_preset_pick(items: list[TemplateItem], acc_id: int, uid: str):
 
     for i, t in enumerate(items[:30]):
         label = (t.title or f"Пресет #{i + 1}").strip()[:40]
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"mail_tmpl_send:{i}:{acc_id}:{uid}",
-                )
-            ]
-        )
+        if mail_id:
+            cb = f"mail_tmpl_send:{i}:m{int(mail_id)}"
+        else:
+            cb = f"mail_tmpl_send:{i}:{acc_id}:{uid}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
 
     rows.append(
         [
@@ -1712,9 +1715,13 @@ async def cb_create_goo_link(callback: CallbackQuery):
     except Exception:
         return await callback.answer("Неверные данные", show_alert=True)
 
+    from handlers.mail_templates import _load_meta_by_mail_id, _load_meta_from_db, _STALE_MAIL_MSG
+
     meta = FULL_META.get((acc_id, uid))
     if not meta:
-        return await callback.answer("Письмо устарело", show_alert=True)
+        meta = await _load_meta_from_db(acc_id, uid)
+    if not meta:
+        return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
 
     uid_tg = callback.from_user.id
     if bg_is_running(uid_tg, "aqua_link"):
@@ -1934,17 +1941,23 @@ async def cb_mail_reply_mode(callback: CallbackQuery, state: FSMContext):
         if not items:
             return await callback.answer("Нет шаблонов. Добавь их в ⚡ Шаблоны", show_alert=True)
 
+        preset_mail_id = data.get("mail_id")
+        try:
+            preset_mail_id = int(preset_mail_id) if preset_mail_id else None
+        except (TypeError, ValueError):
+            preset_mail_id = None
+        pick_kb = _kb_preset_pick(items, acc_id, uid, mail_id=preset_mail_id)
         try:
             await callback.message.edit_text(
                 "🧾 <b>Ваши шаблоны:</b>\n\nНажмите на пресет для отправки",
                 parse_mode="HTML",
-                reply_markup=_kb_preset_pick(items, acc_id, uid),
+                reply_markup=pick_kb,
             )
         except Exception:
             ui = await callback.message.answer(
                 "🧾 <b>Ваши шаблоны:</b>\n\nНажмите на пресет для отправки",
                 parse_mode="HTML",
-                reply_markup=_kb_preset_pick(items, acc_id, uid),
+                reply_markup=pick_kb,
             )
             await state.update_data(ui_message_id=int(ui.message_id))
         else:

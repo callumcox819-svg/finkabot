@@ -24,23 +24,25 @@ router = Router()
 logger = logging.getLogger(__name__)
 
 
-def _templates_kb(items: List[TemplateItem], acc_id: int, uid: str) -> InlineKeyboardMarkup:
+def _templates_kb(
+    items: List[TemplateItem],
+    acc_id: int,
+    uid: str,
+    *,
+    mail_id: int | None = None,
+) -> InlineKeyboardMarkup:
     rows: List[List[InlineKeyboardButton]] = []
 
-    # UI requirement: this screen is "Отправить пресет" and must show user templates.
-    # We display them as numbered presets (as in the reference UX).
     for i, t in enumerate(items[:30]):
         label = (t.title or f"Пресет #{i + 1}").strip()[:40]
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    text=label,
-                    callback_data=f"mail_tmpl_send:{i}:{acc_id}:{uid}",
-                )
-            ]
-        )
+        if mail_id:
+            cb = f"mail_tmpl_send:{i}:m{int(mail_id)}"
+        else:
+            cb = f"mail_tmpl_send:{i}:{acc_id}:{uid}"
+        rows.append([InlineKeyboardButton(text=label, callback_data=cb)])
 
-    rows.append([InlineKeyboardButton(text="Скрыть", callback_data=f"mail_tmpl_close:{acc_id}:{uid}")])
+    close_cb = f"mail_tmpl_close:m{int(mail_id)}" if mail_id else f"mail_tmpl_close:{acc_id}:{uid}"
+    rows.append([InlineKeyboardButton(text="Скрыть", callback_data=close_cb)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -74,8 +76,39 @@ def _parse_uid(uid: str) -> int | None:
         return None
 
 
+def _meta_dict_from_mail(m: IncomingMail) -> dict:
+    from services.email_address import extract_email_address
+
+    return {
+        "from_email": extract_email_address(m.from_email or ""),
+        "from_name": (m.from_name or "").strip(),
+        "subject": m.subject or "",
+        "account_email": extract_email_address(m.account_email or ""),
+        "date_str": m.date_str or "",
+        "_acc_id": int(m.account_id),
+        "_uid": str(m.imap_uid),
+        "_mail_id": int(m.id),
+    }
+
+
+async def _load_meta_by_mail_id(mail_id: int) -> dict | None:
+    try:
+        mid = int(mail_id)
+    except (TypeError, ValueError):
+        return None
+    async with Session() as session:
+        m = (
+            await session.execute(
+                select(IncomingMail).where(IncomingMail.id == mid).limit(1)
+            )
+        ).scalars().first()
+    if not m:
+        return None
+    return _meta_dict_from_mail(m)
+
+
 async def _load_meta_from_db(acc_id: int, uid: str) -> dict | None:
-    """Fallback for callbacks after redeploy (FULL_META is in-memory and gets cleared)."""
+    """Fallback after redeploy: FULL_META в RAM очищается, письмо ищем в Postgres."""
     uid_num = _parse_uid(uid)
     if uid_num is None:
         return None
@@ -86,6 +119,7 @@ async def _load_meta_from_db(acc_id: int, uid: str) -> dict | None:
                 select(IncomingMail)
                 .where(IncomingMail.account_id == int(acc_id))
                 .where(IncomingMail.imap_uid == int(uid_num))
+                .order_by(IncomingMail.id.desc())
                 .limit(1)
             )
         ).scalars().first()
@@ -93,58 +127,110 @@ async def _load_meta_from_db(acc_id: int, uid: str) -> dict | None:
     if not m:
         return None
 
-    from services.email_address import extract_email_address
+    return _meta_dict_from_mail(m)
 
-    return {
-        "from_email": extract_email_address(m.from_email or ""),
-        "from_name": (m.from_name or "").strip(),
-        "subject": m.subject or "",
-        "account_email": extract_email_address(m.account_email or ""),
-        "date_str": m.date_str or "",
-    }
+
+async def _resolve_mail_meta(
+    *,
+    acc_id: int | None = None,
+    uid: str | None = None,
+    mail_id: int | None = None,
+    state_data: dict | None = None,
+) -> dict | None:
+    """Письмо для пресетов: RAM → Postgres по mail_id → по acc+uid → FSM."""
+    state_data = state_data or {}
+    mid = mail_id or state_data.get("mail_id")
+    if mid:
+        meta = await _load_meta_by_mail_id(int(mid))
+        if meta:
+            return meta
+
+    acc = int(acc_id or state_data.get("acc_id") or 0)
+    uid_s = str(uid or state_data.get("uid") or "").strip()
+    if acc and uid_s:
+        meta = FULL_META.get((acc, uid_s)) or await _load_meta_from_db(acc, uid_s)
+        if meta:
+            return meta
+
+    return None
+
+
+_STALE_MAIL_MSG = (
+    "Письмо не найдено в базе (не из‑за возраста). "
+    "Откройте карточку снова через «Написать ещё» или дождитесь нового входящего."
+)
 
 
  
 
 
 @router.callback_query(F.data.startswith("mail_tmpl_open:"))
-async def mail_tmpl_open(callback: CallbackQuery):
+async def mail_tmpl_open(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    acc_id: int | None = None
+    uid: str | None = None
+    mail_id: int | None = None
     try:
-        _, acc_id, uid = (callback.data or "").split(":", 2)
-        acc_id = int(acc_id)
+        parts = (callback.data or "").split(":")
+        if len(parts) == 2 and parts[1].startswith("m"):
+            mail_id = int(parts[1][1:])
+        elif len(parts) >= 3:
+            acc_id = int(parts[1])
+            uid = ":".join(parts[2:])
     except Exception:
         return await callback.answer("Неверные данные", show_alert=True)
 
-    meta = FULL_META.get((acc_id, uid)) or await _load_meta_from_db(acc_id, uid)
+    meta = await _resolve_mail_meta(acc_id=acc_id, uid=uid, mail_id=mail_id, state_data=data)
     if not meta:
-        return await callback.answer("Письмо устарело", show_alert=True)
+        return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
+
+    acc_id = int(meta.get("_acc_id") or acc_id or 0)
+    uid = str(meta.get("_uid") or uid or "")
+    mail_id = int(meta.get("_mail_id") or mail_id or 0) or None
 
     items = await load_templates(callback.from_user.id)
     if not items:
         return await callback.answer("Нет шаблонов. Добавь их в ⚡ Шаблоны", show_alert=True)
 
     text = "Нажмите на пресет для отправки"
-    await callback.message.answer(text, reply_markup=_templates_kb(items, acc_id, uid), parse_mode="HTML")
+    await callback.message.answer(
+        text,
+        reply_markup=_templates_kb(items, acc_id, uid, mail_id=mail_id),
+        parse_mode="HTML",
+    )
     await callback.answer()
 
 
 @router.callback_query(F.data.startswith("mail_tmpl_close:"))
 async def mail_tmpl_close(callback: CallbackQuery):
-    await callback.answer("Ок")
+    await callback.answer("Ок", show_alert=False)
 
 
 @router.callback_query(F.data.startswith("mail_tmpl_send:"))
 async def mail_tmpl_send(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    acc_id: int | None = None
+    uid: str | None = None
+    mail_id: int | None = None
     try:
-        _, idx, acc_id, uid = (callback.data or "").split(":", 3)
-        idx = int(idx)
-        acc_id = int(acc_id)
+        parts = (callback.data or "").split(":")
+        idx = int(parts[1])
+        if len(parts) == 3 and parts[2].startswith("m"):
+            mail_id = int(parts[2][1:])
+        elif len(parts) >= 4:
+            acc_id = int(parts[2])
+            uid = ":".join(parts[3:])
+        else:
+            raise ValueError("bad callback")
     except Exception:
         return await callback.answer("Неверный формат", show_alert=True)
 
-    meta = FULL_META.get((acc_id, uid)) or await _load_meta_from_db(acc_id, uid)
+    meta = await _resolve_mail_meta(acc_id=acc_id, uid=uid, mail_id=mail_id, state_data=data)
     if not meta:
-        return await callback.answer("Письмо устарело", show_alert=True)
+        return await callback.answer(_STALE_MAIL_MSG, show_alert=True)
+
+    acc_id = int(meta.get("_acc_id") or acc_id or 0)
+    uid = str(meta.get("_uid") or uid or "")
 
     from services.email_address import extract_email_address, is_valid_smtp_recipient
 
